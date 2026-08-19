@@ -55,7 +55,9 @@ services:
       context: ./backend
       # BuildKit builds only the stages the target depends on, so naming the
       # stage keeps dev builds from producing anything unnecessary.
-      target: runtime
+      # `dev` = runtime + pytest. The prod overlay targets `runtime`, so test
+      # tooling never ships.
+      target: dev
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-finance}:${POSTGRES_PASSWORD:-finance}@db:5432/${POSTGRES_DB:-finance}

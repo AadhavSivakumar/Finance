@@ -1,0 +1,5 @@
+# Development/test-only dependencies. NOT installed into the runtime image --
+# test tooling in a production container is dead weight and extra CVE surface.
+#   docker compose exec api pip install -r requirements-dev.txt
+#   docker compose exec api python -m pytest tests/ -q
+pytest==8.3.4

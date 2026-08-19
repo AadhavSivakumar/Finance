@@ -121,3 +121,23 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 #                                        ^^^^^^^ binding to 127.0.0.1 inside a
 # container makes it reachable only from that container's own loopback -- the
 # single most common "why can't I reach my app" mistake.
+
+# ---------------------------------------------------------------------------
+# Stage 4: dev -- runtime plus test tooling.
+#
+# Layered ON TOP of runtime so the thing you test is the thing you ship, with
+# only test dependencies added. docker-compose.yml targets this stage;
+# docker-compose.prod.yml targets `runtime`, so pytest and friends never reach
+# production -- they are dead weight and extra CVE surface there.
+#
+# This also exists because you cannot `pip install` into a running container:
+# /opt/venv is owned by appuser and the dev container runs as your host uid.
+# Install-at-build-time is the containerised answer to that, not chmod.
+# ---------------------------------------------------------------------------
+FROM runtime AS dev
+
+USER root
+COPY requirements-dev.txt .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements-dev.txt
+USER appuser
