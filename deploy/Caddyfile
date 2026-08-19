@@ -1,0 +1,30 @@
+# Caddy obtains and renews a Let's Encrypt certificate for {$DOMAIN}
+# automatically, provided:
+#   1. the A/AAAA record for that domain points at this host, and
+#   2. ports 80 and 443 reach this container from the internet.
+#
+# Everything is forwarded to the `web` container (nginx), which serves the
+# static bundle and proxies /api to the api container. Two proxies looks
+# redundant, but they have different jobs: Caddy owns TLS and the public edge,
+# nginx owns the SPA fallback and cache headers.
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# Trust the forwarded scheme so the app can build correct absolute URLs.
+	reverse_proxy web:8080 {
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

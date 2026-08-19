@@ -1,0 +1,144 @@
+# Development stack: `docker compose up`
+#
+# Note there is no top-level `version:` key. It was deprecated in Compose v2
+# and now only produces a warning -- the schema is inferred.
+#
+# Compose creates one user-defined bridge network for the project and attaches
+# every service to it. On that network, service names are DNS names: the api
+# container reaches Postgres at `db:5432`. Containers on the *default* bridge
+# (plain `docker run` with no network) get no such DNS, which is why manual
+# `docker run` setups end up passing IP addresses around.
+
+name: finance
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-finance}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-finance}
+      POSTGRES_DB: ${POSTGRES_DB:-finance}
+    volumes:
+      # A NAMED volume, not a bind mount. Named volumes are managed by Docker,
+      # survive `docker compose down`, and avoid the uid/permission mess of
+      # bind-mounting a host directory into Postgres. This is the difference
+      # between "restarted the stack" and "lost the database".
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      # Published only on loopback: "5432:5432" would expose Postgres on every
+      # host interface. Docker publishes ports by writing iptables rules that
+      # bypass ufw, so a bare port mapping on a VPS is genuinely reachable from
+      # the internet even with the firewall "on".
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-finance} -d ${POSTGRES_DB:-finance}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  cache:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # ^ Persistence off: everything in here is a recomputable price cache, and
+    #   disabling it removes the fork-on-save memory spike.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: ./backend
+      # BuildKit builds only the stages the target depends on, so naming the
+      # stage keeps dev builds from producing anything unnecessary.
+      target: runtime
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-finance}:${POSTGRES_PASSWORD:-finance}@db:5432/${POSTGRES_DB:-finance}
+      REDIS_URL: redis://cache:6379/0
+      ENVIRONMENT: development
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CORS_ORIGINS: http://localhost:${WEB_PORT:-5173},http://127.0.0.1:${WEB_PORT:-5173}
+      MARKET_PROVIDER: ${MARKET_PROVIDER:-demo}
+      MARKET_OPENBB_PROVIDER: ${MARKET_OPENBB_PROVIDER:-yfinance}
+      MARKET_API_KEY: ${MARKET_API_KEY:-}
+      # OpenBB writes ~/.openbb_platform on import and offers no env var to
+      # relocate it (openbb_core reads Path.home()). That is a problem here
+      # because `user:` above runs as a uid with NO /etc/passwd entry, so
+      # Docker sets HOME=/ and the write fails with
+      #   Permission denied: '/.openbb_platform'
+      # Pointing HOME at a writable dir fixes it for any uid.
+      HOME: /tmp
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-1}
+    # Run as YOUR host uid/gid instead of the image's appuser (uid 10001).
+    # A bind mount carries host ownership straight through, so with the image's
+    # uid, `alembic revision --autogenerate` cannot write into ./backend and
+    # any file it did create would land on your host owned by uid 10001. Match
+    # the uids and both problems vanish. Prod keeps the image's non-root user,
+    # because prod has no bind mount.
+    user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
+    volumes:
+      # Bind mount for live reload. In dev the source of truth is the host
+      # directory; the copy baked into the image is shadowed by this mount.
+      - ./backend:/app
+    # Override the image CMD to add --reload. The ENTRYPOINT still runs first,
+    # so the DB wait and migrations happen before uvicorn starts.
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    depends_on:
+      # `service_healthy` waits for the healthcheck to pass, not just for the
+      # container to exist. Plain `depends_on: [db]` only orders *starts*, and
+      # Postgres takes several seconds after start before it accepts
+      # connections -- which is why so many stacks crash-loop on first boot.
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  web:
+    build:
+      context: ./frontend
+      target: dev
+    restart: unless-stopped
+    environment:
+      VITE_PROXY_TARGET: http://api:8000
+      # Set to 1 if HMR stops noticing your edits (common on macOS/Windows).
+      VITE_USE_POLLING: ${VITE_USE_POLLING:-0}
+      # Hostnames the Vite dev server will answer to (Host-header allowlist).
+      # Needed to reach it over a VPN by FQDN instead of raw IP.
+      VITE_ALLOWED_HOSTS: ${VITE_ALLOWED_HOSTS:-.netbird.cloud,.ts.net,localhost}
+    volumes:
+      - ./frontend:/app
+      # An ANONYMOUS volume masking node_modules. Without this line the bind
+      # mount above hides the container's node_modules behind the host's
+      # (or behind nothing at all), and Vite fails to start. This one-line
+      # idiom is the fix for the classic "it works until I mount the source".
+      - /app/node_modules
+    ports:
+      # Host port is configurable, container port is not. Only the LEFT side of
+      # a port mapping can collide -- another project's dev server on 5173 is
+      # exactly why this is a variable. Nothing inside the stack changes.
+      # BIND_ADDR controls WHICH host interface the port is published on.
+      # 127.0.0.1 (default) = this machine only.
+      # A VPN IP (NetBird/Tailscale) = reachable from that overlay network only,
+      #                       encrypted + authenticated.
+      # 0.0.0.0             = every interface, including the local network.
+      # This app has NO AUTH, so 0.0.0.0 on an untrusted network exposes your
+      # financial data to everyone on it. Prefer the Tailscale address.
+      - "${BIND_ADDR:-127.0.0.1}:${WEB_PORT:-5173}:5173"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:

@@ -1,0 +1,23 @@
+# Everything here is excluded from the build context -- the tarball the CLI
+# ships to the daemon before the first instruction runs. A fat context slows
+# every build even when nothing changed, and worse, `COPY . .` will happily
+# bake a stray .env full of production secrets into a layer that anyone who
+# pulls the image can read back.
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.env
+.env.*
+*.sqlite3
+*.log
+Dockerfile
+.dockerignore
+README.md

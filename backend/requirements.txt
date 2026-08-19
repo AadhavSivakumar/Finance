@@ -1,0 +1,22 @@
+# NOTE: fastapi/uvicorn/pydantic are pinned to what openbb-core requires, not
+# to what this app would otherwise pick. openbb-core hard-pins
+# `fastapi==0.136.3` and `uvicorn>=0.40,<0.41`, so adding OpenBB dictates the
+# whole web stack's version. That is the real cost of a heavyweight
+# aggregator dependency -- budget for it before adding one.
+fastapi==0.136.3
+uvicorn[standard]==0.40.0
+sqlalchemy==2.0.36
+alembic==1.14.0
+psycopg[binary]==3.2.3
+pydantic==2.13.4
+pydantic-settings==2.7.0
+redis==5.2.1
+httpx==0.28.1
+python-dateutil==2.9.0.post0
+
+# Market data aggregator. NOTE: this is a heavy dependency -- it pulls pandas,
+# numpy and ~30 provider extensions, roughly doubling the image (~330MB ->
+# ~700MB) and costing ~5s of import time. It is imported lazily in
+# services/prices.py, so MARKET_PROVIDER=demo never pays that cost. Drop this
+# line if you only ever use the demo or finnhub providers.
+openbb==4.7.2

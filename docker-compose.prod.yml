@@ -1,0 +1,131 @@
+# Production overlay for a single VPS.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Compose MERGES files left to right. Scalars (image, command) are replaced;
+# lists (ports, volumes) are APPENDED, not replaced -- which is why every list
+# this file touches is reset with `!reset []` before being redeclared. Forget
+# that and you keep the dev bind mounts in production, silently shipping host
+# source over your built image.
+#
+# Convention: put this file plus a real `.env` on the server, and nothing else.
+
+services:
+  db:
+    ports: !reset []
+    # No published port at all. The api container still reaches it over the
+    # project network; nothing outside the host can. Every port you do not
+    # publish is an attack surface you do not have.
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+      # `:?` fails the command with that message instead of defaulting. In prod
+      # a missing secret must be a loud error, never a silent fallback to
+      # "finance/finance".
+    logging: &logging
+      driver: json-file
+      options:
+        # Unbounded container logs are the #1 way a small VPS runs out of disk.
+        max-size: "10m"
+        max-file: "3"
+
+  cache:
+    logging: *logging
+
+  api:
+    build:
+      context: ./backend
+      target: runtime
+    image: ${REGISTRY:-ghcr.io/yourname}/finance-api:${TAG:-latest}
+    # ^ With `image:` present, `docker compose build` tags the result and
+    #   `docker compose push` publishes it. On the server you then run
+    #   `docker compose pull` and never build at all -- builds need a
+    #   toolchain, RAM and cache that a $5 VPS should not be spending on.
+    user: !reset null           # back to the image's non-root appuser
+    volumes: !reset []          # no bind mount: run the code baked into the image
+    command: !reset null        # fall back to the image CMD (no --reload)
+    ports: !reset []            # only nginx talks to the api
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      REDIS_URL: redis://cache:6379/0
+      ENVIRONMENT: production
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Same-origin in prod (nginx proxies /api), so CORS is not needed at all.
+      CORS_ORIGINS: ${PUBLIC_ORIGIN:-https://example.com}
+      MARKET_PROVIDER: ${MARKET_PROVIDER:-demo}
+      MARKET_OPENBB_PROVIDER: ${MARKET_OPENBB_PROVIDER:-yfinance}
+      MARKET_API_KEY: ${MARKET_API_KEY:-}
+      # See the dev compose file: OpenBB writes ~/.openbb_platform at import.
+      # Under `read_only: true` the real home is not writable either, so point
+      # HOME at the tmpfs below. Settings there are ephemeral, which is fine --
+      # they are regenerated defaults. Mount a named volume here instead if you
+      # want OpenBB's own credential store to persist.
+      HOME: /tmp
+      SEED_DEMO_DATA: "0"
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          # Without a limit a container can consume all host memory and the
+          # OOM killer picks a victim -- often Postgres. Compose applies these
+          # outside Swarm mode as of v2.
+          memory: 512M
+    # Read-only root filesystem: the app writes nothing outside /tmp, so make
+    # that a guarantee rather than a hope. Anything that needs to write gets an
+    # explicit tmpfs.
+    read_only: true
+    tmpfs:
+      # Also serves as HOME (see above) so OpenBB can write its settings. The
+      # generated package/ modules are already baked in at build time.
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  web:
+    build:
+      context: ./frontend
+      target: runtime           # nginx stage, not the Vite dev server
+    image: ${REGISTRY:-ghcr.io/yourname}/finance-web:${TAG:-latest}
+    volumes: !reset []
+    ports: !reset []
+    environment: !reset {}
+    logging: *logging
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------
+  # TLS termination. Caddy is the smallest way to get automatic Let's Encrypt
+  # certificates: point DNS at the box, set DOMAIN, and it provisions and
+  # renews on its own. This is the only container that binds a public port.
+  # ---------------------------------------------------------------------
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates live in a named volume. Lose it and you re-request certs
+      # on every restart, which hits Let's Encrypt rate limits fast.
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+    logging: *logging
+
+volumes:
+  caddy_data:
+  caddy_config:

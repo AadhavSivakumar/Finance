@@ -1,0 +1,13 @@
+# node_modules is the big one: it is hundreds of MB, it is platform-specific
+# (native modules built for your host will not run in the container), and it is
+# reinstalled inside the image anyway.
+node_modules
+dist
+.git
+.gitignore
+.env
+.env.*
+.vite
+*.log
+Dockerfile
+.dockerignore
