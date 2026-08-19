@@ -20,3 +20,10 @@ python-dateutil==2.9.0.post0
 # services/prices.py, so MARKET_PROVIDER=demo never pays that cost. Drop this
 # line if you only ever use the demo or finnhub providers.
 openbb==4.7.2
+
+# Modelling. pandas/numpy already arrive via openbb; scikit-learn adds the
+# estimators and the time-series split machinery. Deliberately NOT deep
+# learning: at this data size a sequence model overfits and loses to gradient
+# boosting on tabular features, at far higher complexity.
+scikit-learn==1.6.1
+scipy==1.15.1
