@@ -58,10 +58,9 @@ if [ "${RUN_MIGRATIONS:-1}" = "1" ]; then
   alembic upgrade head
 fi
 
-if [ "${SEED_DEMO_DATA:-0}" = "1" ]; then
-  log "seeding demo data"
-  python -m app.seed
-fi
+# There is no seed step any more: the tracked universe is reference data that
+# the worker syncs from app/universe.py and the S&P 500 constituent list on
+# every training cycle. Nothing here is user data to seed.
 
 log "starting: $*"
 

@@ -43,7 +43,12 @@ services:
     #   `docker compose pull` and never build at all -- builds need a
     #   toolchain, RAM and cache that a $5 VPS should not be spending on.
     user: !reset null           # back to the image's non-root appuser
-    volumes: !reset []          # no bind mount: run the code baked into the image
+    # !override REPLACES the list instead of appending to it. `!reset []`
+    # followed by a second `volumes:` key is invalid YAML (duplicate key), so
+    # !override is the tool when you need to both drop the dev bind mount and
+    # declare a different mount.
+    volumes: !override
+      - models:/models:ro       # api reads model artefacts; only the worker writes
     command: !reset null        # fall back to the image CMD (no --reload)
     ports: !reset []            # only nginx talks to the api
     environment:
@@ -62,7 +67,6 @@ services:
       # they are regenerated defaults. Mount a named volume here instead if you
       # want OpenBB's own credential store to persist.
       HOME: /tmp
-      SEED_DEMO_DATA: "0"
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
     logging: *logging
     deploy:
@@ -80,6 +84,39 @@ services:
       # Also serves as HOME (see above) so OpenBB can write its settings. The
       # generated package/ modules are already baked in at build time.
       - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  # Same image as the api, different command. Note it does NOT get read_only:
+  # unlike the api it writes model artefacts to the models volume.
+  worker:
+    build:
+      context: ./backend
+      target: runtime
+    image: ${REGISTRY:-ghcr.io/yourname}/finance-api:${TAG:-latest}
+    user: !reset null
+    volumes: !override
+      - models:/models          # read-write: the worker is what writes them
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      REDIS_URL: redis://cache:6379/0
+      ENVIRONMENT: production
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      MARKET_PROVIDER: ${MARKET_PROVIDER:-openbb}
+      MARKET_OPENBB_PROVIDER: ${MARKET_OPENBB_PROVIDER:-yfinance}
+      HOME: /tmp
+      MODEL_DIR: /models
+      WORKER_REFRESH_SECONDS: ${WORKER_REFRESH_SECONDS:-900}
+      WORKER_TRAINING_SECONDS: ${WORKER_TRAINING_SECONDS:-86400}
+      WORKER_INCLUDE_SP500: ${WORKER_INCLUDE_SP500:-1}
+      RUN_MIGRATIONS: "0"
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          # Training holds the full feature matrix in memory, so the worker
+          # needs a far larger allowance than the api's 512M.
+          memory: 4G
     security_opt:
       - no-new-privileges:true
 
@@ -127,5 +164,6 @@ services:
     logging: *logging
 
 volumes:
+  models:
   caddy_data:
   caddy_config:

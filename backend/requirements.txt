@@ -27,3 +27,8 @@ openbb==4.7.2
 # boosting on tabular features, at far higher complexity.
 scikit-learn==1.6.1
 scipy==1.15.1
+
+# Arrives transitively via openbb-yfinance, but pinned explicitly because
+# services/ingest.py imports it directly for batch downloads -- one request for
+# many symbols, which is what makes a 500-symbol universe practical.
+yfinance==1.6.0

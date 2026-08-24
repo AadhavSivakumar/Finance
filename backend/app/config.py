@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     # fmp/intrinio/polygon do (configured in OpenBB's own credential store).
     market_openbb_provider: str = "yfinance"
 
+    # Where fitted models are written. A named volume in Compose, so models
+    # survive container replacement -- refitting on every deploy would be slow
+    # and would silently change predictions.
+    model_dir: str = "/models"
+
     quote_cache_seconds: int = 60
     # Daily bars only change once a day, so they cache far longer than quotes.
     candle_cache_seconds: int = 3600

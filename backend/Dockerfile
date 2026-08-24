@@ -93,6 +93,17 @@ RUN apt-get update \
 # step available.
 RUN useradd --create-home --uid 10001 appuser
 
+# Model-artefact directory, created in the IMAGE so the named volume mounted
+# here inherits these permissions. Docker initialises an empty named volume
+# from the image path; when the path does not exist it creates it root-owned,
+# and a container running as any other uid then cannot write -- which is
+# exactly the "Permission denied: /models/..." failure this avoids.
+#
+# Mode 1777 (sticky, like /tmp) because the dev container runs as the host
+# user's uid, which is not knowable at build time. In production the container
+# runs as appuser and the sticky bit still prevents cross-user deletion.
+RUN mkdir -p /models && chmod 1777 /models
+
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 

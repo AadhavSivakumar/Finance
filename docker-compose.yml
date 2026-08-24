@@ -75,7 +75,6 @@ services:
       #   Permission denied: '/.openbb_platform'
       # Pointing HOME at a writable dir fixes it for any uid.
       HOME: /tmp
-      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-1}
     # Run as YOUR host uid/gid instead of the image's appuser (uid 10001).
     # A bind mount carries host ownership straight through, so with the image's
     # uid, `alembic revision --autogenerate` cannot write into ./backend and
@@ -87,6 +86,8 @@ services:
       # Bind mount for live reload. In dev the source of truth is the host
       # directory; the copy baked into the image is shadowed by this mount.
       - ./backend:/app
+      # Read-only: the worker writes model artefacts, the api only reads them.
+      - models:/models:ro
     # Override the image CMD to add --reload. The ENTRYPOINT still runs first,
     # so the DB wait and migrations happen before uvicorn starts.
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
@@ -107,6 +108,52 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+
+  # ---------------------------------------------------------------------
+  # Background compute. Same image as the api, different command -- the
+  # standard Compose idiom for a worker: one build, one set of dependencies,
+  # no drift between what the API reads and what the worker writes.
+  #
+  # Kept out of the API process on purpose: a multi-minute training run inside
+  # a request handler blocks the event loop and makes healthchecks flap, and
+  # the two have completely different restart and scaling characteristics.
+  # ---------------------------------------------------------------------
+  worker:
+    build:
+      context: ./backend
+      target: dev
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-finance}:${POSTGRES_PASSWORD:-finance}@db:5432/${POSTGRES_DB:-finance}
+      REDIS_URL: redis://cache:6379/0
+      ENVIRONMENT: development
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      MARKET_PROVIDER: ${MARKET_PROVIDER:-openbb}
+      MARKET_OPENBB_PROVIDER: ${MARKET_OPENBB_PROVIDER:-yfinance}
+      HOME: /tmp
+      MODEL_DIR: /models
+      WORKER_REFRESH_SECONDS: ${WORKER_REFRESH_SECONDS:-900}
+      WORKER_TRAINING_SECONDS: ${WORKER_TRAINING_SECONDS:-86400}
+      WORKER_INCLUDE_SP500: ${WORKER_INCLUDE_SP500:-1}
+      # Migrations belong to exactly one process. The api container owns them;
+      # if the worker also ran them the two would race on every boot.
+      RUN_MIGRATIONS: "0"
+    user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
+    volumes:
+      - ./backend:/app
+      - models:/models
+    # The worker inherits the api image, and therefore its HEALTHCHECK, which
+    # curls a web server the worker does not run -- so it would sit permanently
+    # "unhealthy". A background process needs a different liveness notion; the
+    # compute_runs table is the real one.
+    healthcheck:
+      disable: true
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
 
   web:
     build:
@@ -144,3 +191,7 @@ services:
 
 volumes:
   pgdata:
+  # Fitted model artefacts. A named volume so models survive container
+  # replacement -- refitting on every deploy is slow and silently changes
+  # predictions.
+  models:
