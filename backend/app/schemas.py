@@ -1,11 +1,17 @@
+"""API request/response models.
+
+Decimals are serialized as strings so no precision is lost in JSON; computed
+analytics are plain floats, because an RSI of 54.3 does not need 28 digits and
+float keeps the payloads small.
+"""
+
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-
-from .models import AssetClass, Interval, TxnType
+from pydantic import BaseModel, ConfigDict
 
 
 class ORMModel(BaseModel):
@@ -13,92 +19,7 @@ class ORMModel(BaseModel):
 
 
 # --------------------------------------------------------------------------
-# Portfolio
-# --------------------------------------------------------------------------
-
-
-class PortfolioCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
-    base_currency: str = Field(default="USD", min_length=3, max_length=3)
-
-
-class PortfolioOut(ORMModel):
-    id: int
-    name: str
-    base_currency: str
-
-
-class TransactionCreate(BaseModel):
-    symbol: str = Field(min_length=1, max_length=24)
-    type: TxnType
-    quantity: Decimal = Field(gt=0)
-    price: Decimal = Field(ge=0)
-    fee: Decimal = Field(default=Decimal("0"), ge=0)
-    executed_at: date
-    note: str = ""
-
-    @field_validator("symbol")
-    @classmethod
-    def upper(cls, v: str) -> str:
-        return v.strip().upper()
-
-
-class TransactionOut(ORMModel):
-    id: int
-    portfolio_id: int
-    symbol: str
-    type: TxnType
-    quantity: Decimal
-    price: Decimal
-    fee: Decimal
-    executed_at: date
-    note: str
-
-
-class HoldingOut(BaseModel):
-    symbol: str
-    name: str = ""
-    asset_class: AssetClass = AssetClass.equity
-    quantity: Decimal
-    avg_cost: Decimal
-    cost_basis: Decimal
-    last_price: Decimal
-    market_value: Decimal
-    unrealized_pl: Decimal
-    unrealized_pl_pct: Decimal
-    weight_pct: Decimal
-    # False when no live quote was available and the position is valued at
-    # average cost instead.
-    has_quote: bool = True
-
-
-class PortfolioSummary(BaseModel):
-    portfolio_id: int
-    name: str
-    base_currency: str
-    market_value: Decimal
-    cost_basis: Decimal
-    unrealized_pl: Decimal
-    unrealized_pl_pct: Decimal
-    realized_pl: Decimal
-    dividend_income: Decimal
-    holdings: list[HoldingOut]
-
-
-class AllocationSlice(BaseModel):
-    key: str
-    market_value: Decimal
-    weight_pct: Decimal
-
-
-class PerformancePoint(BaseModel):
-    date: date
-    market_value: Decimal
-    cost_basis: Decimal
-
-
-# --------------------------------------------------------------------------
-# Market data
+# Market data primitives (used by services/prices.py)
 # --------------------------------------------------------------------------
 
 
@@ -120,104 +41,162 @@ class Candle(BaseModel):
     volume: Decimal
 
 
-class WatchlistCreate(BaseModel):
-    symbol: str = Field(min_length=1, max_length=24)
-    note: str = ""
-
-    @field_validator("symbol")
-    @classmethod
-    def upper(cls, v: str) -> str:
-        return v.strip().upper()
+# --------------------------------------------------------------------------
+# Reference
+# --------------------------------------------------------------------------
 
 
-class WatchlistOut(ORMModel):
-    id: int
+class InstrumentOut(ORMModel):
     symbol: str
-    note: str
-
-
-# --------------------------------------------------------------------------
-# Business metrics
-# --------------------------------------------------------------------------
-
-
-class RevenueStreamCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=160)
-    customer: str = ""
-    interval: Interval = Interval.monthly
-    amount: Decimal = Field(ge=0)
-    currency: str = "USD"
-    start_date: date
-    end_date: date | None = None
-
-
-class RevenueStreamOut(ORMModel):
-    id: int
     name: str
-    customer: str
-    interval: Interval
-    amount: Decimal
-    currency: str
-    start_date: date
-    end_date: date | None
+    asset_group: str
+    sector: str
+    short_label: str
+    universe: str
 
 
-class ExpenseCreate(BaseModel):
-    category: str = Field(min_length=1, max_length=80)
-    vendor: str = ""
-    interval: Interval = Interval.monthly
-    amount: Decimal = Field(ge=0)
-    currency: str = "USD"
-    start_date: date
-    end_date: date | None = None
+# --------------------------------------------------------------------------
+# Analytics
+# --------------------------------------------------------------------------
 
 
-class ExpenseOut(ORMModel):
-    id: int
+class SnapshotOut(ORMModel):
+    symbol: str
+    as_of: date
+    close: float | None = None
+    ret_1d: float | None = None
+    ret_5d: float | None = None
+    ret_21d: float | None = None
+    ret_63d: float | None = None
+    ret_252d: float | None = None
+    rsi_14: float | None = None
+    vol_20d: float | None = None
+    vol_ratio_10_60: float | None = None
+    atr_pct: float | None = None
+    pct_from_52w_high: float | None = None
+    drawdown_pct: float | None = None
+    volume_z: float | None = None
+    rel_strength_21d: float | None = None
+    px_over_sma200: float | None = None
+
+
+class MoverRow(BaseModel):
+    """A snapshot decorated with display metadata, for ranking tables."""
+
+    symbol: str
+    name: str
+    short_label: str
+    asset_group: str
+    sector: str
+    close: float | None = None
+    ret_1d: float | None = None
+    ret_5d: float | None = None
+    ret_21d: float | None = None
+    ret_63d: float | None = None
+    ret_252d: float | None = None
+    rsi_14: float | None = None
+    vol_20d: float | None = None
+    volume_z: float | None = None
+    rel_strength_21d: float | None = None
+    pct_from_52w_high: float | None = None
+
+
+class RegimeOut(BaseModel):
+    """The one-glance read on market state."""
+
+    as_of: date
+    trend: str                       # risk-on | risk-off | mixed
+    breadth_pct: float               # % of universe above its 200d SMA
+    advancers_pct: float             # % up on the day
+    spy_px_over_sma200: float | None = None
+    vix_level: float | None = None
+    vix_percentile_1y: float | None = None
+    avg_correlation: float | None = None
+    notes: list[str] = []
+
+
+class SignalOut(ORMModel):
+    symbol: str
+    as_of: date
+    kind: str
+    direction: str
+    strength: float | None = None
+    detail: str
+
+
+class CorrelationOut(BaseModel):
+    as_of: date
+    window: int
+    symbols: list[str]
+    labels: list[str]
+    matrix: list[list[float | None]]
+
+
+class PredictionOut(BaseModel):
+    # Pydantic v2 reserves the "model_" prefix; these fields are named that way
+    # deliberately (they describe the model, not the prediction), so the
+    # namespace guard is switched off rather than the names mangled.
+    model_config = ConfigDict(protected_namespaces=())
+
+    symbol: str
+    name: str
+    as_of: date
+    target: str
+    model: str
+    probability: float
+    percentile: float | None = None
+    # Repeated from the model run so a caller cannot read a probability
+    # without also seeing whether the model has any measured edge.
+    model_roc_auc: float | None = None
+    model_lift: float | None = None
+    model_edge_vs_baseline: float | None = None
+
+
+class ModelRunOut(ORMModel):
+    target: str
+    model: str
+    trained_at: datetime
+    n_train: int
+    n_features: int
+    train_start: date | None = None
+    train_end: date | None = None
+    roc_auc: float | None = None
+    base_rate: float | None = None
+    accuracy: float | None = None
+    baseline_accuracy: float | None = None
+    edge_vs_baseline: float | None = None
+    top_decile_precision: float | None = None
+    lift: float | None = None
+    is_active: bool = False
+    metrics: dict[str, Any] = {}
+
+
+class MacroPoint(BaseModel):
+    date: date
+    value: float | None = None
+
+
+class MacroSeriesOut(BaseModel):
+    series_id: str
+    title: str
+    units: str
     category: str
-    vendor: str
-    interval: Interval
-    amount: Decimal
-    currency: str
-    start_date: date
-    end_date: date | None
+    latest_value: float | None = None
+    latest_date: date | None = None
+    change_1y: float | None = None
+    points: list[MacroPoint] = []
 
 
-class CashSnapshotCreate(BaseModel):
-    as_of: date
-    amount: Decimal
-    currency: str = "USD"
+class ComputeRunOut(ORMModel):
+    kind: str
+    status: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    duration_seconds: float | None = None
+    detail: dict[str, Any] = {}
+    error: str = ""
 
 
-class CashSnapshotOut(ORMModel):
-    id: int
-    as_of: date
-    amount: Decimal
-    currency: str
-
-
-class MonthlyPoint(BaseModel):
-    month: str  # YYYY-MM
-    revenue: Decimal
-    mrr: Decimal
-    expenses: Decimal
-    net: Decimal
-
-
-class BusinessSummary(BaseModel):
-    as_of: date
-    mrr: Decimal
-    arr: Decimal
-    monthly_expenses: Decimal
-    net_burn: Decimal
-    gross_margin_pct: Decimal
-    cash: Decimal
-    runway_months: Decimal | None  # None == profitable / infinite runway
-    mom_revenue_growth_pct: Decimal
-    series: list[MonthlyPoint]
-
-
-class ExpenseBreakdown(BaseModel):
-    category: str
-    monthly_amount: Decimal
-    share_pct: Decimal
+class HistoryPoint(BaseModel):
+    date: date
+    close: float
