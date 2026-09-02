@@ -37,6 +37,7 @@ from .db import SessionLocal
 from .models import ComputeRun, RunStatus
 from .services import analytics, ingest, macro, modeling
 from .services import features as F
+from .universe import BENCHMARK
 from .services import labels as L
 
 log = logging.getLogger("worker")
@@ -94,7 +95,14 @@ def build_frame(db) -> tuple[pd.DataFrame, pd.DataFrame, date | None]:
     if bars.empty:
         return bars, pd.DataFrame(), None
     feats = L.add_labels(F.build_features(bars), bars)
-    as_of = bars["date"].max().date()
+
+    # as_of is the last date the BENCHMARK traded, not the last date any
+    # instrument did. Crypto trades weekends, so the global max is routinely a
+    # Saturday on which only BTC/ETH/SOL have bars -- computing a market-wide
+    # snapshot there yields breadth and advancer figures drawn from three
+    # instruments.
+    bench = bars[bars["symbol"] == BENCHMARK]
+    as_of = (bench["date"].max() if not bench.empty else bars["date"].max()).date()
     return bars, feats, as_of
 
 

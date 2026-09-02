@@ -1,0 +1,181 @@
+# Build the dashboard and publish it to GitHub Pages.
+#
+# Pages serves static files only -- no Python, no Postgres, no worker. This
+# dashboard is entirely read-only and precomputed, so the whole pipeline runs
+# HERE, in the runner, and only its JSON output is published. The result is a
+# genuinely live public dashboard with no server to host or pay for.
+#
+# Postgres runs as a service container for the duration of the job. It starts
+# empty every time, so each run re-ingests the full history (~4 min) rather
+# than doing an incremental top-up. That is the trade for having no persistent
+# database; caching Postgres state across runs is possible but far more
+# machinery than a daily job justifies.
+
+name: Build and deploy dashboard
+
+on:
+  schedule:
+    # 22:30 UTC on weekdays — after the US close (20:00/21:00 UTC depending on
+    # DST), leaving time for the day's bars to settle.
+    - cron: "30 22 * * 1-5"
+  push:
+    branches: [main]
+  workflow_dispatch:        # lets you trigger a rebuild by hand
+
+# Least privilege: the job needs to read the repo and publish to Pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two publishes race. `cancel-in-progress: false` because a
+# half-finished deploy is worse than a queued one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: finance
+          POSTGRES_PASSWORD: finance
+          POSTGRES_DB: finance
+        ports:
+          - 5432:5432
+        # Without this the job races Postgres' startup and the first
+        # connection fails — the same problem `depends_on: service_healthy`
+        # solves in Compose.
+        options: >-
+          --health-cmd "pg_isready -U finance"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+psycopg://finance:finance@localhost:5432/finance
+      # No Redis in CI. The cache is optional by design and the code degrades
+      # to uncached, which is the right behaviour for a one-shot batch job.
+      REDIS_URL: redis://localhost:6399/0
+      MARKET_PROVIDER: openbb
+      MARKET_OPENBB_PROVIDER: yfinance
+      MODEL_DIR: ${{ github.workspace }}/.models
+      HOME: ${{ github.workspace }}/.home
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install Python dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Prepare writable dirs
+        # OpenBB writes ~/.openbb_platform on import and has no env var to
+        # relocate it, so HOME is pointed somewhere writable — the same fix the
+        # containers need under a read-only rootfs.
+        run: mkdir -p "$HOME" "$MODEL_DIR"
+
+      - name: Run migrations
+        working-directory: backend
+        run: alembic upgrade head
+
+      - name: Ingest, compute and train
+        working-directory: backend
+        run: |
+          python - <<'PY'
+          import logging
+          logging.basicConfig(level="INFO", format="%(levelname)s %(message)s")
+          from app.db import SessionLocal
+          from app import worker
+
+          db = SessionLocal()
+          # Training first: it syncs the universe, ingests history and fits the
+          # models. Refresh then computes today's snapshots and predictions
+          # using those models.
+          print(worker.training_cycle(db))
+          print(worker.refresh_cycle(db))
+          PY
+
+      - name: Export static data
+        working-directory: backend
+        run: |
+          python -m app.export --out "$GITHUB_WORKSPACE/site-data"
+          echo "--- exported ---"
+          ls -lh "$GITHUB_WORKSPACE/site-data"
+
+      - name: Fail if the export is empty
+        # A green deploy that publishes an empty dashboard is worse than a red
+        # one, so this is an explicit gate rather than a trust exercise.
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          root = os.environ["GITHUB_WORKSPACE"] + "/site-data"
+          bundle = json.load(open(f"{root}/all.json"))
+          movers = bundle.get("movers") or []
+          models = bundle.get("models") or []
+          regime = bundle.get("regime") or {}
+          problems = []
+          if len(movers) < 100:
+              problems.append(f"only {len(movers)} movers")
+          if not models:
+              problems.append("no model runs")
+          if not regime.get("as_of"):
+              problems.append("regime has no as_of")
+          if problems:
+              sys.exit("export looks broken: " + "; ".join(problems))
+          print(f"export OK — {len(movers)} instruments, {len(models)} models, session {regime['as_of']}")
+          PY
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        env:
+          # Static mode: the app reads the exported JSON instead of calling an
+          # API that does not exist on Pages.
+          VITE_DATA_SOURCE: static
+          # Project sites live at /<repo>/, so assets need that prefix.
+          BASE_PATH: /${{ github.event.repository.name }}/
+        run: |
+          npm ci
+          npm run build
+
+      - name: Assemble the site
+        run: |
+          cp -r "$GITHUB_WORKSPACE/site-data" frontend/dist/data
+          # Pages runs Jekyll by default, which strips files and folders
+          # beginning with an underscore. Vite does not emit any today, but
+          # this costs nothing and removes a whole class of confusing 404s.
+          touch frontend/dist/.nojekyll
+          du -sh frontend/dist
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

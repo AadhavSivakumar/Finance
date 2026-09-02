@@ -78,7 +78,9 @@ def persist_snapshots(db: Session, feats: pd.DataFrame, as_of: date) -> int:
     for (symbol, _), r in latest.iterrows():
         record = {"symbol": symbol, "as_of": as_of}
         for f in SNAPSHOT_FIELDS:
-            record[f] = _clean(r.get(f))
+            # close is carried through the feature frame as the internal
+            # `_close`; everything else shares its name.
+            record[f] = _clean(r.get("_close" if f == "close" else f))
         record["extras"] = {
             f: _clean(r.get(f)) for f in EXTRA_FIELDS if f in latest.columns
         }

@@ -1,58 +1,78 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { api, type Portfolio } from "./lib/api";
-import { useApi } from "./lib/useApi";
-import { BusinessPage } from "./pages/BusinessPage";
-import { MarketPage } from "./pages/MarketPage";
-import { PortfolioPage } from "./pages/PortfolioPage";
+import { dataMode, loadBundle } from "./lib/data";
+import type { Bundle } from "./lib/types";
+import { MacroPage } from "./pages/MacroPage";
+import { MomentumPage } from "./pages/MomentumPage";
+import { OverviewPage } from "./pages/OverviewPage";
+import { RiskPage } from "./pages/RiskPage";
 
-type Tab = "portfolio" | "business" | "market";
+type Tab = "overview" | "momentum" | "risk" | "macro";
 
 const TABS: { id: Tab; label: string }[] = [
-  { id: "portfolio", label: "Portfolio" },
-  { id: "business", label: "Business" },
-  { id: "market", label: "Market" },
+  { id: "overview", label: "Overview" },
+  { id: "momentum", label: "Momentum" },
+  { id: "risk", label: "Risk" },
+  { id: "macro", label: "Macro" },
 ];
 
 type Theme = "light" | "dark" | "system";
-
-function useTheme() {
-  const [theme, setTheme] = useState<Theme>(
-    () => (localStorage.getItem("theme") as Theme | null) ?? "system",
-  );
-
-  useEffect(() => {
-    const root = document.documentElement;
-    if (theme === "system") root.removeAttribute("data-theme");
-    else root.setAttribute("data-theme", theme);
-    localStorage.setItem("theme", theme);
-  }, [theme]);
-
-  const cycle = useCallback(
-    () => setTheme((t) => (t === "system" ? "light" : t === "light" ? "dark" : "system")),
-    [],
-  );
-
-  return { theme, cycle };
-}
-
 const THEME_LABEL: Record<Theme, string> = {
   system: "Theme: system",
   light: "Theme: light",
   dark: "Theme: dark",
 };
 
+function useTheme() {
+  const [theme, setTheme] = useState<Theme>(
+    () => (localStorage.getItem("theme") as Theme | null) ?? "system",
+  );
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === "system") root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", theme);
+    localStorage.setItem("theme", theme);
+  }, [theme]);
+  const cycle = useCallback(
+    () => setTheme((t) => (t === "system" ? "light" : t === "light" ? "dark" : "system")),
+    [],
+  );
+  return { theme, cycle };
+}
+
 export default function App() {
-  const [tab, setTab] = useState<Tab>("portfolio");
+  const [tab, setTab] = useState<Tab>("overview");
+  const [bundle, setBundle] = useState<Bundle | null>(null);
+  const [error, setError] = useState<string>();
+  const [loading, setLoading] = useState(true);
   const { theme, cycle } = useTheme();
-  const portfolios = useApi(() => api.listPortfolios(), []);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    loadBundle()
+      .then((b) => {
+        setBundle(b);
+        setError(undefined);
+      })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : "Failed to load data"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(load, [load]);
+
+  const asOf = bundle?.regime?.as_of ?? bundle?.meta?.as_of ?? null;
 
   return (
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          Finance Dashboard
-          <span>Portfolio performance &amp; business metrics</span>
+          Market Dashboard
+          <span>
+            {asOf ? `Session ${asOf}` : "Loading…"}
+            {bundle?.meta?.freshness?.symbols
+              ? ` · ${bundle.meta.freshness.symbols} instruments`
+              : ""}
+          </span>
         </div>
 
         <nav className="tabs" role="tablist" aria-label="Sections">
@@ -69,66 +89,43 @@ export default function App() {
           ))}
         </nav>
 
+        {/* Refreshing is pointless on the static build: the data only changes
+            when the scheduled job republishes it. */}
+        {dataMode === "api" && (
+          <button className="icon-button" type="button" onClick={load}>
+            Refresh
+          </button>
+        )}
         <button className="icon-button" type="button" onClick={cycle}>
           {THEME_LABEL[theme]}
         </button>
       </header>
 
-      {portfolios.error && (
+      {error && (
         <p className="banner">
-          Could not reach the API ({portfolios.error}). Is the <code>api</code> container running?
+          Could not load data ({error}).{" "}
+          {dataMode === "api"
+            ? "Is the api container running?"
+            : "The published data files may still be building."}
         </p>
       )}
 
-      {tab === "portfolio" &&
-        (portfolios.loading ? (
-          <p className="empty">Loading…</p>
-        ) : (portfolios.data ?? []).length === 0 ? (
-          <EmptyPortfolios onCreated={portfolios.reload} />
-        ) : (
-          <PortfolioPage portfolios={portfolios.data as Portfolio[]} />
-        ))}
+      {loading && !bundle && <p className="empty">Loading market data…</p>}
 
-      {tab === "business" && <BusinessPage />}
-      {tab === "market" && <MarketPage />}
+      {bundle && (
+        <>
+          {tab === "overview" && <OverviewPage bundle={bundle} />}
+          {tab === "momentum" && <MomentumPage bundle={bundle} />}
+          {tab === "risk" && <RiskPage bundle={bundle} />}
+          {tab === "macro" && <MacroPage bundle={bundle} />}
+
+          <footer className="card-sub" style={{ marginTop: 28, textAlign: "center" }}>
+            Computed {bundle.meta?.generated_at?.slice(0, 16).replace("T", " ")} UTC ·{" "}
+            {bundle.meta?.freshness?.bars?.toLocaleString()} daily bars · market data via OpenBB /
+            yfinance. Educational use only — not investment advice.
+          </footer>
+        </>
+      )}
     </div>
-  );
-}
-
-function EmptyPortfolios({ onCreated }: { onCreated: () => void }) {
-  const [name, setName] = useState("Main Portfolio");
-  const [busy, setBusy] = useState(false);
-
-  const create = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    try {
-      await api.createPortfolio({ name });
-      onCreated();
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className="card span-12" style={{ maxWidth: 520 }}>
-      <h2 className="card-title">No portfolios yet</h2>
-      <p className="card-sub" style={{ marginBottom: 14 }}>
-        Create one, or load the demo dataset with
-        <code> docker compose exec api python -m app.seed</code>.
-      </p>
-      <form onSubmit={create} style={{ display: "flex", gap: 8 }}>
-        <input
-          type="text"
-          value={name}
-          aria-label="Portfolio name"
-          onChange={(e) => setName(e.target.value)}
-          style={{ flex: 1 }}
-        />
-        <button className="primary-button" type="submit" disabled={busy || !name.trim()}>
-          Create
-        </button>
-      </form>
-    </section>
   );
 }

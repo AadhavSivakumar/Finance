@@ -93,8 +93,12 @@ def _per_symbol_features(g: pd.DataFrame) -> pd.DataFrame:
     out["volume_ratio_5_20"] = _safe_div(vol.rolling(5).mean(), vol_mean20)
     out["dollar_volume_log"] = np.log1p(close * vol)
 
-    # ATR used by the labeller; kept so the label module need not recompute.
+    # Internals for downstream consumers, underscore-prefixed so
+    # feature_columns() excludes them. `close` in particular must NEVER be a
+    # model feature -- the model would learn price level, which is meaningless
+    # across a 529-symbol universe.
     out["_atr14"] = atr14
+    out["_close"] = close
     return out
 
 

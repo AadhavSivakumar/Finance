@@ -5,7 +5,13 @@ import { defineConfig } from "vite";
 // them to the api container; in prod nginx does the same job. That keeps the
 // browser on a single origin, so there is no CORS preflight and no
 // VITE_API_URL to rebuild the bundle for when the host changes.
+// GitHub Pages serves a project site from https://<user>.github.io/<repo>/,
+// so every asset URL needs that prefix. BASE_PATH is set by the Pages workflow
+// and defaults to "/" for local development, where the app is served at root.
+const base = process.env.BASE_PATH ?? "/";
+
 export default defineConfig({
+  base,
   plugins: [react()],
   server: {
     host: "0.0.0.0", // bind all interfaces, or the port publish cannot reach it
