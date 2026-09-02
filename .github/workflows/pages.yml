@@ -108,6 +108,19 @@ jobs:
           print(worker.refresh_cycle(db))
           PY
 
+      - name: Fetch headlines
+        # So the published bundle carries a news fallback. At runtime the site
+        # prefers the data branch, which is far fresher, but a bundled copy
+        # means a failed branch fetch degrades to stale news rather than an
+        # empty panel.
+        working-directory: backend
+        run: |
+          python - <<'PY'
+          from app.db import SessionLocal
+          from app.services import news
+          print(news.refresh(SessionLocal()))
+          PY
+
       - name: Export static data
         working-directory: backend
         run: |

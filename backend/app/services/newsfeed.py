@@ -121,40 +121,46 @@ def fetch_feed(name: str, url: str, timeout: float = 15.0) -> list[dict]:
 
 
 
-def tag_symbols(text: str, matchers: list[tuple[str, "re.Pattern"]], limit: int = 6) -> list[str]:
+def tag_symbols(text: str, matchers: list[tuple[str, list["re.Pattern"]]], limit: int = 6) -> list[str]:
     """Best-effort ticker tagging by pattern match.
 
     Not entity resolution: a headline about a person named Rollins can still
     match Rollins Inc. The stoplists above cut the common cases, and the UI
     labels these tags as approximate.
     """
-    hits = [sym for sym, pattern in matchers if pattern.search(text)]
+    hits = [sym for sym, patterns in matchers if any(p.search(text) for p in patterns)]
     return hits[:limit]
 
 
-def build_matchers(symbol_names: list[tuple[str, str]]) -> list[tuple[str, re.Pattern]]:
+def build_matchers(symbol_names: list[tuple[str, str]]) -> list[tuple[str, list[re.Pattern]]]:
     """(symbol, name) pairs -> compiled matchers.
+
+    Tickers match CASE-SENSITIVELY, company names case-insensitively. That
+    asymmetry matters: tickers are written uppercase in prose, and matching
+    them loosely turns ordinary words into tags -- "slides below all major MAs"
+    was tagging MAS (Masco), because case-insensitively "MAs" is "MAS".
 
     Takes plain tuples rather than ORM rows so this works identically against
     the database and against a JSON file.
     """
-    out: list[tuple[str, re.Pattern]] = []
+    out: list[tuple[str, list[re.Pattern]]] = []
     for symbol, raw_name in symbol_names:
-        alts: list[str] = []
+        patterns: list[re.Pattern] = []
 
         sym = (symbol or "").upper()
         if sym and sym not in TICKER_STOPLIST and len(sym) >= 2 and "-" not in sym and not sym.startswith("^"):
-            alts.append(re.escape(sym))
+            # No IGNORECASE here, deliberately.
+            patterns.append(re.compile(r"\b" + re.escape(sym) + r"\b"))
 
         name = SUFFIXES.sub("", raw_name or "").strip(" ,.&")
-        if len(name) >= 5 and " " not in name:
-            if name.lower() not in NAME_STOPLIST:
-                alts.append(re.escape(name))
-        elif len(name.split()) >= 2 and len(name) >= 8:
-            alts.append(re.escape(name))
+        name_ok = (
+            len(name) >= 5 and " " not in name and name.lower() not in NAME_STOPLIST
+        ) or (len(name.split()) >= 2 and len(name) >= 8)
+        if name_ok:
+            patterns.append(re.compile(r"\b" + re.escape(name) + r"\b", re.IGNORECASE))
 
-        if alts:
-            out.append((symbol, re.compile(r"\b(" + "|".join(alts) + r")\b", re.IGNORECASE)))
+        if patterns:
+            out.append((symbol, patterns))
     return out
 
 
