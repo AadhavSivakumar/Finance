@@ -85,3 +85,14 @@ def history(
 @router.get("/freshness")
 def freshness(db: Session = Depends(get_db)) -> dict:
     return queries.freshness(db)
+
+
+@router.get("/news")
+def news(limit: int = Query(60, ge=1, le=300), db: Session = Depends(get_db)) -> list[dict]:
+    return queries.news(db, limit=limit)
+
+
+@router.get("/metrics")
+def metrics() -> list[dict]:
+    """Definitions for every metric shown in the UI."""
+    return queries.metrics()

@@ -35,7 +35,7 @@ import pandas as pd
 from .config import get_settings
 from .db import SessionLocal
 from .models import ComputeRun, RunStatus
-from .services import analytics, ingest, macro, modeling
+from .services import analytics, ingest, macro, modeling, news
 from .services import features as F
 from .universe import BENCHMARK
 from .services import labels as L
@@ -45,6 +45,9 @@ settings = get_settings()
 
 REFRESH_SECONDS = int(os.getenv("WORKER_REFRESH_SECONDS", "900"))
 TRAINING_SECONDS = int(os.getenv("WORKER_TRAINING_SECONDS", "86400"))
+# Headlines move far faster than daily bars, so they get their own, much
+# tighter cadence rather than riding along with the 15-minute market refresh.
+NEWS_SECONDS = int(os.getenv("WORKER_NEWS_SECONDS", "300"))
 HISTORY_YEARS = int(os.getenv("WORKER_HISTORY_YEARS", "8"))
 INCLUDE_SP500 = os.getenv("WORKER_INCLUDE_SP500", "1") == "1"
 
@@ -104,6 +107,16 @@ def build_frame(db) -> tuple[pd.DataFrame, pd.DataFrame, date | None]:
     bench = bars[bars["symbol"] == BENCHMARK]
     as_of = (bench["date"].max() if not bench.empty else bars["date"].max()).date()
     return bars, feats, as_of
+
+
+def news_cycle(db) -> dict:
+    """Headlines only -- deliberately cheap so it can run every 5 minutes.
+
+    Four RSS fetches and an upsert; no bars, no features, no models.
+    """
+    with run_tracker(db, "news") as run:
+        run.detail = news.refresh(db)
+        return run.detail
 
 
 def refresh_cycle(db) -> dict:
@@ -170,6 +183,7 @@ def main() -> None:
 
     db = SessionLocal()
     last_training = 0.0
+    news_cycle(db)  # populate immediately; do not show an empty feed for 5 min
 
     # Train on boot if no model has ever been stored, so a fresh stack becomes
     # useful without waiting a full day.
@@ -178,24 +192,36 @@ def main() -> None:
         training_cycle(db)
         last_training = time.monotonic()
 
-    while not _shutdown:
-        cycle_start = time.monotonic()
-        refresh_cycle(db)
+    last_refresh = 0.0
+    last_news = 0.0
 
-        if time.monotonic() - last_training >= TRAINING_SECONDS:
+    # Three independent timers rather than one loop period, because the three
+    # jobs have wildly different costs: news is seconds, refresh is ~30s, and
+    # training is minutes. Ticking every few seconds and checking each timer
+    # keeps the fast job fast without dragging the slow ones along.
+    while not _shutdown:
+        now = time.monotonic()
+
+        if now - last_news >= NEWS_SECONDS:
+            news_cycle(db)
+            last_news = time.monotonic()
+
+        if now - last_refresh >= REFRESH_SECONDS:
+            started = time.monotonic()
+            refresh_cycle(db)
+            last_refresh = time.monotonic()
+            log.info("refresh took %.0fs", last_refresh - started)
+
+        if now - last_training >= TRAINING_SECONDS:
             training_cycle(db)
             last_training = time.monotonic()
 
-        elapsed = time.monotonic() - cycle_start
-        sleep_for = max(5.0, REFRESH_SECONDS - elapsed)
-        log.info("cycle took %.0fs, sleeping %.0fs", elapsed, sleep_for)
-
-        # Sleep in slices so SIGTERM is noticed promptly instead of after a
-        # full 15-minute nap.
+        # Short tick so SIGTERM is noticed promptly and the 5-minute news
+        # cadence is not quantised by a 15-minute sleep.
         waited = 0.0
-        while waited < sleep_for and not _shutdown:
-            time.sleep(min(2.0, sleep_for - waited))
-            waited += 2.0
+        while waited < 5.0 and not _shutdown:
+            time.sleep(1.0)
+            waited += 1.0
 
     db.close()
     log.info("worker stopped cleanly")

@@ -1,19 +1,23 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { dataMode, loadBundle } from "./lib/data";
-import type { Bundle } from "./lib/types";
+import { dataMode, loadBundle, loadNews } from "./lib/data";
+import type { Bundle, NewsItem } from "./lib/types";
+import { GlossaryPage } from "./pages/GlossaryPage";
 import { MacroPage } from "./pages/MacroPage";
 import { MomentumPage } from "./pages/MomentumPage";
 import { OverviewPage } from "./pages/OverviewPage";
+import { NewsPage } from "./pages/NewsPage";
 import { RiskPage } from "./pages/RiskPage";
 
-type Tab = "overview" | "momentum" | "risk" | "macro";
+type Tab = "overview" | "momentum" | "risk" | "macro" | "news" | "glossary";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "momentum", label: "Momentum" },
   { id: "risk", label: "Risk" },
   { id: "macro", label: "Macro" },
+  { id: "news", label: "News" },
+  { id: "glossary", label: "Glossary" },
 ];
 
 type Theme = "light" | "dark" | "system";
@@ -45,6 +49,7 @@ export default function App() {
   const [bundle, setBundle] = useState<Bundle | null>(null);
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(true);
+  const [news, setNews] = useState<{ items: NewsItem[]; generated_at: string } | null>(null);
   const { theme, cycle } = useTheme();
 
   const load = useCallback(() => {
@@ -59,6 +64,23 @@ export default function App() {
   }, []);
 
   useEffect(load, [load]);
+
+  // Headlines are polled independently of the dashboard: they refresh every
+  // few minutes while the market data changes once a day, so tying them to the
+  // same fetch would either waste requests or serve stale news.
+  useEffect(() => {
+    let cancelled = false;
+    const pull = () =>
+      loadNews().then((n) => {
+        if (!cancelled && n) setNews({ items: n.items as NewsItem[], generated_at: n.generated_at });
+      });
+    pull();
+    const timer = setInterval(pull, 5 * 60 * 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
 
   const asOf = bundle?.regime?.as_of ?? bundle?.meta?.as_of ?? null;
 
@@ -114,10 +136,19 @@ export default function App() {
 
       {bundle && (
         <>
-          {tab === "overview" && <OverviewPage bundle={bundle} />}
+          {tab === "overview" && (
+            <OverviewPage bundle={bundle} news={news?.items ?? bundle.news ?? []} />
+          )}
           {tab === "momentum" && <MomentumPage bundle={bundle} />}
           {tab === "risk" && <RiskPage bundle={bundle} />}
           {tab === "macro" && <MacroPage bundle={bundle} />}
+          {tab === "news" && (
+            <NewsPage
+              items={news?.items ?? bundle.news ?? []}
+              generatedAt={news?.generated_at ?? null}
+            />
+          )}
+          {tab === "glossary" && <GlossaryPage bundle={bundle} />}
 
           <footer className="card-sub" style={{ marginTop: 28, textAlign: "center" }}>
             Computed {bundle.meta?.generated_at?.slice(0, 16).replace("T", " ")} UTC ·{" "}

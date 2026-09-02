@@ -47,6 +47,9 @@ def build_payload(db) -> dict[str, object]:
             "up_5d": queries.predictions(db, target="up_5d", limit=50),
         },
         "correlations": queries.correlations(db),
+        "news": queries.news(db, limit=80),
+        "metrics": queries.metrics(),
+        "symbols": queries.symbols(db),
         "macro": queries.macro(db),
         "history": {s: queries.history(db, s, days=400) for s in HISTORY_SYMBOLS},
     }

@@ -48,6 +48,12 @@ EXTRA_FIELDS = [
     "sma20_over_sma50", "px_over_sma20", "px_over_sma50",
     "pct_from_52w_low", "volume_ratio_5_20", "close_in_range", "gap_pct",
     "rel_strength_5d",
+    # Added metrics. These live in `extras` rather than as typed columns
+    # because the UI displays them but never sorts the whole universe by them
+    # -- which is exactly the line the typed/JSONB split is drawn on.
+    "adx_14", "stoch_k_14", "mfi_14", "obv_trend_20",
+    "downside_dev_60", "sharpe_60", "sortino_60", "ulcer_60",
+    "skew_120", "kurtosis_120", "beta_60", "corr_spy_60",
 ]
 
 

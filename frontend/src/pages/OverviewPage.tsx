@@ -7,7 +7,8 @@ import { ModelPanel } from "../components/ModelPanel";
 import { StatTile } from "../components/StatTile";
 import { AXIS_PROPS, CURSOR_FILL, GRID_PROPS, makeTooltip } from "../components/chartBits";
 import { pct, signedPct } from "../lib/format";
-import type { Bundle } from "../lib/types";
+import { NewsFeed } from "../components/NewsFeed";
+import type { Bundle, NewsItem } from "../lib/types";
 
 const SECTOR_TOOLTIP = makeTooltip({
   valueFormatter: (v) => signedPct(v),
@@ -20,7 +21,7 @@ const TREND_COPY: Record<string, string> = {
   mixed: "Signals disagree — no clean regime read.",
 };
 
-export function OverviewPage({ bundle }: { bundle: Bundle }) {
+export function OverviewPage({ bundle, news = [] }: { bundle: Bundle; news?: NewsItem[] }) {
   const { regime, sectors, models, signals, predictions } = bundle;
   const spike = predictions?.spike_2atr ?? [];
 
@@ -154,6 +155,19 @@ export function OverviewPage({ bundle }: { bundle: Bundle }) {
           </div>
         </header>
         <ModelPanel models={models} />
+      </section>
+
+      <section className="card span-12">
+        <header className="card-head">
+          <div>
+            <h2 className="card-title">Latest headlines</h2>
+            <p className="card-sub">
+              Context for the numbers above. Refreshed independently of the
+              market data, which only changes once a day.
+            </p>
+          </div>
+        </header>
+        <NewsFeed items={news.slice(0, 12)} />
       </section>
 
       <section className="card span-5">

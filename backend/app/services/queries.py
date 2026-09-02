@@ -30,6 +30,8 @@ from ..models import (
 )
 from ..universe import BY_SYMBOL
 from . import analytics
+from . import news as news_service
+from ..metrics_catalog import catalog as metric_catalog
 
 # Long daily series (EFFR has ~2600 points) would dominate the payload, so
 # each series is thinned to at most this many points for display.
@@ -421,3 +423,27 @@ def freshness(db: Session) -> dict:
         "bars": db.scalar(select(func.count()).select_from(PriceBar)) or 0,
         "runs": list(last_by_kind.values()),
     }
+
+
+def news(db: Session, limit: int = 60) -> list[dict]:
+    return news_service.latest(db, limit=limit)
+
+
+def metrics(_db: Session | None = None) -> list[dict]:
+    """Metric definitions. Served alongside the data so the UI never has to
+    hardcode an explanation that could drift from the computation."""
+    return [dict(m) for m in metric_catalog()]
+
+
+def symbols(db: Session) -> list[dict]:
+    """Symbol -> name map, published so the standalone news job can tag
+    headlines using the same universe without touching the database."""
+    return [
+        {
+            "symbol": i.symbol,
+            "name": i.name,
+            "group": i.asset_group.value,
+            "sector": i.sector,
+        }
+        for i in db.scalars(select(Instrument).order_by(Instrument.symbol))
+    ]

@@ -20,6 +20,32 @@ const DATA_BASE = `${import.meta.env.BASE_URL ?? "/"}data`.replace(/\/+/g, "/");
 
 export const dataMode = MODE;
 
+/**
+ * Headlines refresh far more often than the dashboard rebuilds, so in static
+ * mode they are fetched from the `data` branch rather than the published Pages
+ * bundle. raw.githubusercontent.com serves `access-control-allow-origin: *`
+ * with a 5-minute cache, which matches the news job's cadence exactly.
+ *
+ * Falls back to whatever shipped in the bundle if that request fails, so a
+ * missing branch degrades to slightly stale news rather than an empty panel.
+ */
+const NEWS_URL =
+  import.meta.env.VITE_NEWS_URL ??
+  "https://raw.githubusercontent.com/AadhavSivakumar/Finance/data/news.json";
+
+export async function loadNews(): Promise<{ items: unknown[]; generated_at: string } | null> {
+  const url = MODE === "static" ? NEWS_URL : "/api/news";
+  try {
+    const res = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!res.ok) return null;
+    const body = await res.json();
+    // The API returns a bare array; the static file wraps it with metadata.
+    return Array.isArray(body) ? { items: body, generated_at: "" } : body;
+  } catch {
+    return null;
+  }
+}
+
 async function getJSON<T>(url: string): Promise<T> {
   const res = await fetch(url, { headers: { Accept: "application/json" } });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${url}`);
@@ -52,6 +78,11 @@ export async function loadBundle(): Promise<Bundle> {
       getJSON<Bundle["meta"]["freshness"]>("/api/freshness"),
     ]);
 
+  const [news, metrics] = await Promise.all([
+    getJSON<Bundle["news"]>("/api/news?limit=80").catch(() => []),
+    getJSON<Bundle["metrics"]>("/api/metrics").catch(() => []),
+  ]);
+
   return {
     meta: { generated_at: new Date().toISOString(), as_of: regime?.as_of ?? null, freshness },
     regime,
@@ -62,6 +93,8 @@ export async function loadBundle(): Promise<Bundle> {
     predictions: { spike_2atr: spike, up_5d: up5 },
     correlations,
     macro,
+    news,
+    metrics,
     // Histories are fetched lazily in API mode; the static bundle ships them.
     history: {},
   };

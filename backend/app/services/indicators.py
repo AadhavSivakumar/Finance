@@ -190,3 +190,145 @@ def volume_zscore(volume: pd.Series, window: int = 20) -> float:
     if sd == 0 or not np.isfinite(sd):
         return float("nan")
     return float((v.iloc[-1] - hist.mean()) / sd)
+
+
+# --------------------------------------------------------------------------
+# Trend strength / oscillators
+# --------------------------------------------------------------------------
+
+
+def adx(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14) -> pd.Series:
+    """Average Directional Index -- how strongly a market is trending.
+
+    Direction-agnostic on purpose: ADX is high in a strong downtrend as well as
+    a strong uptrend. Conventionally, above 25 means trending, below 20 means
+    ranging.
+    """
+    up_move = high.diff()
+    down_move = -low.diff()
+    plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+    minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+
+    atr_ = true_range(high, low, close).ewm(alpha=1 / window, adjust=False).mean()
+    safe_atr = atr_.replace(0, np.nan)
+    plus_di = 100 * plus_dm.ewm(alpha=1 / window, adjust=False).mean() / safe_atr
+    minus_di = 100 * minus_dm.ewm(alpha=1 / window, adjust=False).mean() / safe_atr
+
+    denom = (plus_di + minus_di).replace(0, np.nan)
+    dx = 100 * (plus_di - minus_di).abs() / denom
+    return dx.ewm(alpha=1 / window, adjust=False).mean()
+
+
+def stochastic_k(
+    high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14
+) -> pd.Series:
+    """Where the close sits within the recent high-low range, 0-100."""
+    lowest = low.rolling(window, min_periods=window).min()
+    highest = high.rolling(window, min_periods=window).max()
+    span = (highest - lowest).replace(0, np.nan)
+    return 100 * (close - lowest) / span
+
+
+def money_flow_index(
+    high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series, window: int = 14
+) -> pd.Series:
+    """RSI weighted by dollar volume -- "is the move backed by money?"."""
+    typical = (high + low + close) / 3
+    flow = typical * volume
+    direction = typical.diff()
+
+    positive = flow.where(direction > 0, 0.0).rolling(window, min_periods=window).sum()
+    negative = flow.where(direction < 0, 0.0).rolling(window, min_periods=window).sum()
+
+    ratio = positive / negative.replace(0, np.nan)
+    out = 100 - (100 / (1 + ratio))
+    # No down-flow at all means a maximal reading, which the division makes NaN.
+    return out.where(negative != 0, 100.0)
+
+
+def obv_trend(close: pd.Series, volume: pd.Series, window: int = 20) -> pd.Series:
+    """Slope of On-Balance Volume, normalised by average volume.
+
+    Raw OBV is an unbounded cumulative sum, so its *level* is meaningless
+    across symbols; only its recent direction carries information.
+    """
+    sign = np.sign(close.diff()).fillna(0.0)
+    obv = (sign * volume).cumsum()
+    change = obv.diff(window)
+    scale = volume.rolling(window, min_periods=window).mean().replace(0, np.nan)
+    return change / (scale * window)
+
+
+# --------------------------------------------------------------------------
+# Risk-adjusted return and distribution shape
+# --------------------------------------------------------------------------
+
+
+def downside_deviation(close: pd.Series, window: int = 60) -> pd.Series:
+    """Annualised volatility of NEGATIVE returns only.
+
+    Standard deviation punishes upside surprises equally with downside ones,
+    which is not how anyone experiences risk.
+    """
+    r = log_returns(close)
+    downside = r.where(r < 0, 0.0)
+    return downside.rolling(window, min_periods=window).std(ddof=1) * np.sqrt(TRADING_DAYS) * 100
+
+
+def sharpe_ratio(close: pd.Series, window: int = 60) -> pd.Series:
+    """Annualised return divided by annualised volatility.
+
+    Excess-return-free: no risk-free rate is subtracted, so this is strictly a
+    return-per-unit-of-risk ratio rather than a true Sharpe. Stated plainly
+    because quoting it as "Sharpe" while omitting the risk-free rate is a
+    common way to flatter a number.
+    """
+    r = log_returns(close)
+    mean = r.rolling(window, min_periods=window).mean() * TRADING_DAYS
+    sd = r.rolling(window, min_periods=window).std(ddof=1) * np.sqrt(TRADING_DAYS)
+    return mean / sd.replace(0, np.nan)
+
+
+def sortino_ratio(close: pd.Series, window: int = 60) -> pd.Series:
+    """Like the ratio above but dividing by downside deviation only."""
+    r = log_returns(close)
+    mean = r.rolling(window, min_periods=window).mean() * TRADING_DAYS
+    downside = r.where(r < 0, 0.0)
+    dd = downside.rolling(window, min_periods=window).std(ddof=1) * np.sqrt(TRADING_DAYS)
+    return mean / dd.replace(0, np.nan)
+
+
+def ulcer_index(close: pd.Series, window: int = 60) -> pd.Series:
+    """Root-mean-square drawdown over the window.
+
+    Unlike max drawdown, which is a single worst moment, this captures how
+    *deep and how long* the pain lasted.
+    """
+    roll_max = close.rolling(window, min_periods=window).max()
+    drawdown = ((close - roll_max) / roll_max.replace(0, np.nan)) * 100
+    return np.sqrt((drawdown**2).rolling(window, min_periods=window).mean())
+
+
+def return_skew(close: pd.Series, window: int = 120) -> pd.Series:
+    """Asymmetry of the return distribution.
+
+    Negative skew means occasional large losses among many small gains -- the
+    shape that ruins people who only looked at average return.
+    """
+    return log_returns(close).rolling(window, min_periods=window).skew()
+
+
+def return_kurtosis(close: pd.Series, window: int = 120) -> pd.Series:
+    """Fat-tailedness. Above 0 (excess) means extremes are likelier than a
+    normal distribution predicts -- which is nearly always true of markets."""
+    return log_returns(close).rolling(window, min_periods=window).kurt()
+
+
+def rolling_correlation(
+    asset_close: pd.Series, bench_close: pd.Series, window: int = 60
+) -> pd.Series:
+    """Correlation of daily returns against a benchmark, aligned on shared dates."""
+    a = log_returns(asset_close)
+    b = log_returns(bench_close)
+    joined = pd.concat([a, b], axis=1, join="inner")
+    return joined.iloc[:, 0].rolling(window, min_periods=window // 2).corr(joined.iloc[:, 1])

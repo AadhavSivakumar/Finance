@@ -288,3 +288,32 @@ class ComputeRun(Base):
     duration_seconds: Mapped[float | None] = mapped_column(Float)
     detail: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
     error: Mapped[str] = mapped_column(Text, default="")
+
+
+class NewsItem(Base):
+    """A headline from a public RSS feed.
+
+    Deduplicated on `guid`, a hash of the canonical link, because the same
+    story is routinely syndicated across feeds with slightly different titles
+    and tracking parameters on the URL.
+    """
+
+    __tablename__ = "news_items"
+    __table_args__ = (
+        Index("ix_news_published", "published_at"),
+        Index("ix_news_source", "source"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    guid: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    title: Mapped[str] = mapped_column(Text)
+    link: Mapped[str] = mapped_column(Text, default="")
+    source: Mapped[str] = mapped_column(String(60), default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    # Tickers mentioned, best-effort. JSON rather than a join table: this is a
+    # display aid, not something we query by.
+    symbols: Mapped[list[str]] = mapped_column(JSONType, default=list)

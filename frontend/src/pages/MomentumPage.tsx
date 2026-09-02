@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 
 import { ChartCard } from "../components/ChartCard";
+import { MetricInfo } from "../components/MetricInfo";
 import { signedPct } from "../lib/format";
 import type { Bundle, Mover } from "../lib/types";
 
@@ -29,6 +30,7 @@ function rank(rows: Mover[], key: WindowKey, dir: 1 | -1) {
 }
 
 export function MomentumPage({ bundle }: { bundle: Bundle }) {
+  const byKey = new Map((bundle.metrics ?? []).map((m) => [m.key, m]));
   const [win, setWin] = useState<WindowKey>("ret_21d");
   const [group, setGroup] = useState<string>("all");
 
@@ -70,6 +72,7 @@ export function MomentumPage({ bundle }: { bundle: Bundle }) {
       <div className="grid">
         <ChartCard
           title="Leaders"
+          actions={<MetricInfo metric={byKey.get(win)} />}
           subtitle={`Strongest ${WINDOWS.find((w) => w.key === win)?.label} performers.`}
           className="span-6"
           empty={leaders.length === 0}
@@ -77,6 +80,7 @@ export function MomentumPage({ bundle }: { bundle: Bundle }) {
         />
         <ChartCard
           title="Laggards"
+          actions={<MetricInfo metric={byKey.get(win)} />}
           subtitle={`Weakest ${WINDOWS.find((w) => w.key === win)?.label} performers.`}
           className="span-6"
           empty={laggards.length === 0}
@@ -85,6 +89,7 @@ export function MomentumPage({ bundle }: { bundle: Bundle }) {
 
         <ChartCard
           title="Relative strength vs the market"
+          actions={<MetricInfo metric={byKey.get("rel_strength_21d")} />}
           subtitle="21-day return minus the S&P 500's, so it isolates what is outperforming rather than what is simply rising."
           className="span-12"
           empty={rows.length === 0}

@@ -35,6 +35,19 @@ def _safe_div(a: pd.Series, b: pd.Series) -> pd.Series:
     return a / b.replace(0, np.nan)
 
 
+def _rolling_beta(asset: pd.Series, bench: pd.Series, window: int = 60) -> pd.Series:
+    """Rolling cov/var beta. indicators.beta() returns a single scalar for the
+    latest window; the feature matrix needs one value per date."""
+    a = I.log_returns(asset)
+    b = I.log_returns(bench)
+    joined = pd.concat([a, b], axis=1, join="inner").dropna()
+    if joined.empty:
+        return pd.Series(dtype=float)
+    cov = joined.iloc[:, 0].rolling(window, min_periods=window // 2).cov(joined.iloc[:, 1])
+    var = joined.iloc[:, 1].rolling(window, min_periods=window // 2).var()
+    return cov / var.replace(0, np.nan)
+
+
 def _per_symbol_features(g: pd.DataFrame) -> pd.DataFrame:
     """Features for one symbol. `g` is sorted ascending by date."""
     close, high, low, vol = g["close"], g["high"], g["low"], g["volume"]
@@ -84,6 +97,20 @@ def _per_symbol_features(g: pd.DataFrame) -> pd.DataFrame:
     out["pct_from_52w_high"] = (_safe_div(close, roll_max) - 1) * 100
     out["pct_from_52w_low"] = (_safe_div(close, roll_min) - 1) * 100
     out["drawdown_pct"] = (_safe_div(close, close.cummax()) - 1) * 100
+
+    # --- trend strength / oscillators ------------------------------------
+    out["adx_14"] = I.adx(high, low, close, 14)
+    out["stoch_k_14"] = I.stochastic_k(high, low, close, 14)
+    out["mfi_14"] = I.money_flow_index(high, low, close, vol, 14)
+    out["obv_trend_20"] = I.obv_trend(close, vol, 20)
+
+    # --- risk-adjusted return and distribution shape ---------------------
+    out["downside_dev_60"] = I.downside_deviation(close, 60)
+    out["sharpe_60"] = I.sharpe_ratio(close, 60)
+    out["sortino_60"] = I.sortino_ratio(close, 60)
+    out["ulcer_60"] = I.ulcer_index(close, 60)
+    out["skew_120"] = I.return_skew(close, 120)
+    out["kurtosis_120"] = I.return_kurtosis(close, 120)
 
     # --- volume ----------------------------------------------------------
     vol_mean20 = vol.rolling(20, min_periods=20).mean()
@@ -159,6 +186,28 @@ def build_features(bars: pd.DataFrame) -> pd.DataFrame:
     for col in ("ret_5d", "ret_21d", "ret_126d", "volume_z", "vol_20d"):
         if col in feats:
             feats[f"xs_rank_{col}"] = feats.groupby("date")[col].rank(pct=True)
+
+    # --- benchmark-relative risk -----------------------------------------
+    # Beta and correlation need two series, so they cannot be computed in the
+    # per-symbol pass. Both align on shared dates first: crypto trades weekends
+    # and equities do not, and an unaligned join silently pairs a Saturday
+    # crypto move against Friday's equity move.
+    wide_close = bars.pivot_table(index="date", columns="symbol", values="close")
+    if MARKET_SYMBOL in wide_close:
+        bench = wide_close[MARKET_SYMBOL]
+        beta_frames, corr_frames = [], []
+        for symbol in wide_close.columns:
+            series = wide_close[symbol].dropna()
+            if len(series) < 80:
+                continue
+            corr = I.rolling_correlation(series, bench, 60)
+            beta_series = _rolling_beta(series, bench, 60)
+            corr_frames.append(pd.DataFrame({"symbol": symbol, "date": corr.index, "corr_spy_60": corr.to_numpy()}))
+            beta_frames.append(pd.DataFrame({"symbol": symbol, "date": beta_series.index, "beta_60": beta_series.to_numpy()}))
+        if corr_frames:
+            feats = feats.merge(pd.concat(corr_frames, ignore_index=True), on=["symbol", "date"], how="left")
+        if beta_frames:
+            feats = feats.merge(pd.concat(beta_frames, ignore_index=True), on=["symbol", "date"], how="left")
 
     # Relative strength vs the market over the same window.
     if "mkt_ret_21d" in feats:

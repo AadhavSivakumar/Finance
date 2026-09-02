@@ -24,7 +24,7 @@ on:
 
 # Least privilege: the job needs to read the repo and publish to Pages.
 permissions:
-  contents: read
+  contents: write     # publishes symbols.json to the data branch
   pages: write
   id-token: write
 
@@ -164,6 +164,28 @@ jobs:
           # this costs nothing and removes a whole class of confusing 404s.
           touch frontend/dist/.nojekyll
           du -sh frontend/dist
+
+      # Publish the symbol list to the data branch so the 5-minute news job
+      # can tag headlines against the same universe without a database.
+      - name: Publish symbols to the data branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin data >/dev/null 2>&1; then
+            git fetch origin data --depth=1
+            git worktree add ../data-branch origin/data
+          else
+            git worktree add --detach ../data-branch
+            git -C ../data-branch checkout --orphan data
+            git -C ../data-branch rm -rf . >/dev/null 2>&1 || true
+          fi
+          cp "$GITHUB_WORKSPACE/site-data/symbols.json" ../data-branch/symbols.json
+          cd ../data-branch
+          git add symbols.json
+          git diff --cached --quiet || git commit -m "symbols $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push origin HEAD:data
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

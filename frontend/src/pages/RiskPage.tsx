@@ -5,6 +5,7 @@ import {
 
 import { ChartCard } from "../components/ChartCard";
 import { CorrelationHeatmap } from "../components/CorrelationHeatmap";
+import { MetricInfo } from "../components/MetricInfo";
 import { StatTile } from "../components/StatTile";
 import { AXIS_PROPS, CURSOR_FILL, GRID_PROPS, makeTooltip } from "../components/chartBits";
 import { pct, signedPct } from "../lib/format";
@@ -16,6 +17,7 @@ const VOL_TOOLTIP = makeTooltip({
 });
 
 export function RiskPage({ bundle }: { bundle: Bundle }) {
+  const byKey = new Map((bundle.metrics ?? []).map((m) => [m.key, m]));
   const { correlations, movers, regime } = bundle;
 
   const mostVolatile = useMemo(
@@ -75,6 +77,7 @@ export function RiskPage({ bundle }: { bundle: Bundle }) {
 
       <ChartCard
         title="Cross-asset correlation"
+        actions={<MetricInfo metric={byKey.get("corr_spy_60")} />}
         subtitle="How much the major asset classes are moving together. When everything turns blue at once, diversification has stopped working."
         className="span-12"
         empty={!correlations?.labels?.length}
@@ -89,6 +92,7 @@ export function RiskPage({ bundle }: { bundle: Bundle }) {
 
       <ChartCard
         title="Most volatile"
+        actions={<MetricInfo metric={byKey.get("vol_20d")} />}
         subtitle="Annualised 20-day realised volatility. One series, one colour — bar length already encodes size."
         className="span-6"
         empty={mostVolatile.length === 0}
@@ -112,6 +116,7 @@ export function RiskPage({ bundle }: { bundle: Bundle }) {
 
       <ChartCard
         title="Volatility expanding"
+        actions={<MetricInfo metric={byKey.get("vol_ratio_10_60")} />}
         subtitle="10-day volatility relative to 60-day. Above 1 means the market is waking up — compression precedes expansion."
         className="span-6"
         empty={expanding.length === 0}
@@ -143,6 +148,7 @@ export function RiskPage({ bundle }: { bundle: Bundle }) {
 
       <ChartCard
         title="Deepest drawdowns"
+        actions={<MetricInfo metric={byKey.get("drawdown_pct")} />}
         subtitle="Distance below the running peak of the tracked history."
         className="span-12"
         empty={deepest.length === 0}

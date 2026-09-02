@@ -1,0 +1,76 @@
+# Refresh headlines on a tight cadence, independently of the dashboard build.
+#
+# WHY SEPARATE: the main build takes ~5 minutes (ingest 1M bars, compute
+# features, train and validate models). Rerunning that to refresh a news feed
+# would be absurd, and two concurrent Pages deploys would fight each other.
+#
+# This job needs no database and no scientific stack -- only httpx -- so it
+# finishes in seconds. It publishes news.json to the `data` branch, which the
+# dashboard fetches directly from raw.githubusercontent.com (which serves
+# `access-control-allow-origin: *` and a 5-minute cache, matching this cadence).
+#
+# CAVEAT worth knowing: GitHub's minimum cron interval is 5 minutes, and
+# scheduled workflows are best-effort. Under load they are routinely delayed
+# and occasionally skipped, so treat 5 minutes as a target, not a guarantee.
+# The self-hosted Docker worker does hit a true 5-minute cadence.
+
+name: Refresh headlines
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write        # needed to push to the data branch
+
+concurrency:
+  group: news
+  cancel-in-progress: true   # a superseded news run has no value
+
+jobs:
+  news:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install (httpx only)
+        run: pip install "httpx==0.28.1"
+
+      - name: Check out the data branch
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # The data branch is an orphan: it holds published artefacts, not
+          # source, so it must not share history with main.
+          if git ls-remote --exit-code --heads origin data >/dev/null 2>&1; then
+            git fetch origin data --depth=1
+            git worktree add ../data-branch origin/data
+          else
+            git worktree add --detach ../data-branch
+            git -C ../data-branch checkout --orphan data
+            git -C ../data-branch rm -rf . >/dev/null 2>&1 || true
+          fi
+
+      - name: Fetch headlines
+        run: |
+          python scripts/fetch_news.py \
+            --out ../data-branch \
+            --symbols ../data-branch/symbols.json
+
+      - name: Publish
+        working-directory: ../data-branch
+        run: |
+          git add news.json
+          # Nothing to do when no new headlines appeared; an empty commit every
+          # 5 minutes would bloat the branch for no reason.
+          if git diff --cached --quiet; then
+            echo "no change in headlines"
+            exit 0
+          fi
+          git commit -m "headlines $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push origin HEAD:data

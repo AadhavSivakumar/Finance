@@ -114,6 +114,33 @@ export interface Freshness {
   runs: ComputeRunRow[];
 }
 
+export interface MetricDef {
+  key: string;
+  label: string;
+  unit: string;
+  short: string;
+  reading: string;
+  direction?: "higher" | "lower" | "context";
+  caveat?: string;
+  group?: string;
+}
+
+export interface NewsItem {
+  title: string;
+  link: string;
+  source: string;
+  summary: string;
+  published_at: string | null;
+  symbols: string[];
+}
+
+export interface SymbolRow {
+  symbol: string;
+  name: string;
+  group: string;
+  sector: string;
+}
+
 export interface Bundle {
   meta: { generated_at: string; as_of: string | null; freshness: Freshness };
   regime: Regime;
@@ -125,4 +152,7 @@ export interface Bundle {
   correlations: Correlations;
   macro: MacroSeries[];
   history: Record<string, { date: string; close: number }[]>;
+  news: NewsItem[];
+  metrics: MetricDef[];
+  symbols?: SymbolRow[];
 }
