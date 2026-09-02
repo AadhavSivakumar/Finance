@@ -47,3 +47,21 @@ class TestBalancedTargets:
 def test_nan_metrics_never_pass():
     assert not _passes_gate(roc_auc=float("nan"), lift=3.0, edge_pp=1.0, base_rate=1.0)
     assert not _passes_gate(roc_auc=0.7, lift=float("nan"), edge_pp=1.0, base_rate=1.0)
+
+
+def test_training_cycle_ingests_before_building_features():
+    """Regression guard for a first-run failure.
+
+    training_cycle used to build the feature frame before ingesting, so on a
+    fresh database it found no bars and returned {"error": "no bars"} while
+    reporting success. CI starts with an empty database every run, so this was
+    invisible locally and fatal there.
+    """
+    import inspect
+
+    from app import worker
+
+    src = inspect.getsource(worker.training_cycle)
+    ingest_at = src.index("ingest_bars")
+    build_at = src.index("build_frame")
+    assert ingest_at < build_at, "training_cycle must ingest before building features"

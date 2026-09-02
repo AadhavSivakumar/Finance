@@ -132,11 +132,20 @@ def refresh_cycle(db) -> dict:
 def training_cycle(db) -> dict:
     with run_tracker(db, "training") as run:
         ingest.sync_instruments(db, include_sp500=INCLUDE_SP500)
+
+        # Ingest before building the frame. On a fresh database there are no
+        # bars yet, and training would otherwise bail with "no bars" -- which
+        # is exactly what happened on the first CI run, where the database
+        # starts empty every time. Locally this was masked because bars had
+        # already been ingested by an earlier refresh.
+        stats = ingest.ingest_bars(db, history_years=HISTORY_YEARS)
+
         _, feats, as_of = build_frame(db)
         if as_of is None:
             run.detail = {"error": "no bars"}
             return run.detail
         detail = {
+            **stats,
             "as_of": as_of.isoformat(),
             "models": modeling.train_all(db, feats),
             "macro": macro.refresh(db),
