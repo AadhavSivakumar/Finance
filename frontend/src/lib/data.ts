@@ -36,7 +36,7 @@ const NEWS_URL =
 export async function loadNews(): Promise<{ items: unknown[]; generated_at: string } | null> {
   const url = MODE === "static" ? NEWS_URL : "/api/news";
   try {
-    const res = await fetch(url, { headers: { Accept: "application/json" } });
+    const res = await fetch(bust(url), { headers: { Accept: "application/json" } });
     if (!res.ok) return null;
     const body = await res.json();
     // The API returns a bare array; the static file wraps it with metadata.
@@ -46,8 +46,23 @@ export async function loadNews(): Promise<{ items: unknown[]; generated_at: stri
   }
 }
 
+/**
+ * Cache-buster with a coarse time bucket.
+ *
+ * GitHub Pages serves the bundle with `cache-control: max-age=600`, and a
+ * browser that keeps a tab open will happily reuse a copy for the full ten
+ * minutes after a new build lands. A bucket that changes every five minutes
+ * makes the URL -- and therefore the cache key -- roll over on that cadence,
+ * while still letting the CDN and browser reuse the response inside a bucket.
+ * `Date.now()` on every request would defeat caching entirely.
+ */
+function bust(url: string): string {
+  const bucket = Math.floor(Date.now() / (5 * 60 * 1000));
+  return `${url}${url.includes("?") ? "&" : "?"}v=${bucket}`;
+}
+
 async function getJSON<T>(url: string): Promise<T> {
-  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  const res = await fetch(bust(url), { headers: { Accept: "application/json" } });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${url}`);
   return (await res.json()) as T;
 }

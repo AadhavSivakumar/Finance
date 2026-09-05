@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { dataMode, loadBundle, loadNews } from "./lib/data";
 import type { Bundle, NewsItem } from "./lib/types";
+import { Freshness } from "./components/Freshness";
 import { GlossaryPage } from "./pages/GlossaryPage";
 import { MacroPage } from "./pages/MacroPage";
 import { MomentumPage } from "./pages/MomentumPage";
@@ -122,6 +123,14 @@ export default function App() {
           {THEME_LABEL[theme]}
         </button>
       </header>
+
+      {bundle && (
+        <Freshness
+          asOf={asOf}
+          generatedAt={bundle.meta?.generated_at ?? null}
+          newsGeneratedAt={news?.generated_at || null}
+        />
+      )}
 
       {error && (
         <p className="banner">

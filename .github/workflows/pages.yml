@@ -15,9 +15,18 @@ name: Build and deploy dashboard
 
 on:
   schedule:
-    # 22:30 UTC on weekdays — after the US close (20:00/21:00 UTC depending on
-    # DST), leaving time for the day's bars to settle.
-    - cron: "30 22 * * 1-5"
+    # Two attempts per session, both well after the US close (20:00/21:00 UTC).
+    #
+    # The first version of this ran at 22:30 UTC and was consistently one
+    # session behind: GitHub delayed the run ~1h45m (scheduled workflows are
+    # best-effort) and even then Yahoo had not finalised the day's bar, so the
+    # in-progress-day filter dropped it. 02:30 UTC gives Yahoo six hours;
+    # 06:00 is a fallback in case the first run is skipped or delayed badly.
+    #
+    # Days are 2-6 (Tue-Sat) in UTC because a US session that closes Friday
+    # evening is published in the early hours of Saturday UTC.
+    - cron: "30 2 * * 2-6"
+    - cron: "0 6 * * 2-6"
   push:
     branches: [main]
   workflow_dispatch:        # lets you trigger a rebuild by hand
@@ -128,27 +137,72 @@ jobs:
           echo "--- exported ---"
           ls -lh "$GITHUB_WORKSPACE/site-data"
 
-      - name: Fail if the export is empty
-        # A green deploy that publishes an empty dashboard is worse than a red
-        # one, so this is an explicit gate rather than a trust exercise.
+      - name: Fail if the export is empty or stale
+        # A green deploy that publishes an empty or stale dashboard is worse
+        # than a red one, so this is an explicit gate rather than a trust
+        # exercise. The result is also written to the job summary, because run
+        # logs expire and "what session did Tuesday's build produce?" should
+        # not require them.
         run: |
           python - <<'PY'
-          import json, os, sys
+          import datetime as dt, json, os, sys
           root = os.environ["GITHUB_WORKSPACE"] + "/site-data"
           bundle = json.load(open(f"{root}/all.json"))
           movers = bundle.get("movers") or []
           models = bundle.get("models") or []
           regime = bundle.get("regime") or {}
-          problems = []
+          news = bundle.get("news") or []
+          problems, warnings = [], []
+
           if len(movers) < 100:
               problems.append(f"only {len(movers)} movers")
           if not models:
               problems.append("no model runs")
-          if not regime.get("as_of"):
+          as_of_s = regime.get("as_of")
+          if not as_of_s:
               problems.append("regime has no as_of")
+          else:
+              as_of = dt.date.fromisoformat(as_of_s)
+              stale_days = (dt.date.today() - as_of).days
+              # 1 = normal (yesterday's session). 3 = Saturday after Friday.
+              # 4 = a Monday holiday. Anything beyond that means ingestion is
+              # not getting the newest bar, which is a bug, not a calendar.
+              if stale_days > 4:
+                  problems.append(f"session {as_of_s} is {stale_days} days old")
+              elif stale_days > 1:
+                  warnings.append(f"session {as_of_s} is {stale_days} days old (weekend/holiday?)")
+          if not news:
+              warnings.append("no headlines bundled")
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          active = [m for m in models if m.get("is_active")]
+          lines = [
+              "## Dashboard build",
+              "",
+              f"| | |", "|---|---|",
+              f"| Market session | **{as_of_s}** |",
+              f"| Instruments | {len(movers)} |",
+              f"| Regime | {regime.get('trend')} · breadth {regime.get('breadth_pct')}% |",
+              f"| Models evaluated / active | {len(models)} / {len(active)} |",
+              f"| Headlines bundled | {len(news)} |",
+              "",
+          ]
+          for m in models:
+              lines.append(f"- `{m['target']}` / {m['model']}: AUC {m.get('roc_auc')}, lift {m.get('lift')}, "
+                           f"{'**active**' if m.get('is_active') else 'no edge'}")
+          if warnings:
+              lines += ["", "> ⚠️ " + "; ".join(warnings)]
+          if problems:
+              lines += ["", "> ❌ " + "; ".join(problems)]
+          if summary:
+              with open(summary, "a") as fh:
+                  fh.write("\n".join(lines) + "\n")
+
+          for w in warnings:
+              print("WARNING:", w)
           if problems:
               sys.exit("export looks broken: " + "; ".join(problems))
-          print(f"export OK — {len(movers)} instruments, {len(models)} models, session {regime['as_of']}")
+          print(f"export OK — {len(movers)} instruments, {len(models)} models, session {as_of_s}")
           PY
 
       - uses: actions/setup-node@v4
