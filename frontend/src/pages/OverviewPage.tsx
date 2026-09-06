@@ -1,9 +1,11 @@
+import { useState } from "react";
 import {
   Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 
 import { ChartCard } from "../components/ChartCard";
 import { ModelPanel } from "../components/ModelPanel";
+import { TrackRecordPanel } from "../components/TrackRecord";
 import { StatTile } from "../components/StatTile";
 import { AXIS_PROPS, CURSOR_FILL, GRID_PROPS, makeTooltip } from "../components/chartBits";
 import { pct, signedPct } from "../lib/format";
@@ -21,9 +23,27 @@ const TREND_COPY: Record<string, string> = {
   mixed: "Signals disagree — no clean regime read.",
 };
 
+type SpikeTarget = "spike_2atr" | "absmove_2atr";
+
+const TARGET_COPY: Record<SpikeTarget, { label: string; blurb: string }> = {
+  spike_2atr: {
+    label: "Gain",
+    blurb: "Highest modelled probability of a next-day GAIN larger than 2× ATR.",
+  },
+  absmove_2atr: {
+    label: "Either way",
+    blurb:
+      "Highest modelled probability of a next-day move larger than 2× ATR in EITHER direction — the honest framing of what volatility models can do.",
+  },
+};
+
 export function OverviewPage({ bundle, news = [] }: { bundle: Bundle; news?: NewsItem[] }) {
   const { regime, sectors, models, signals, predictions } = bundle;
-  const spike = predictions?.spike_2atr ?? [];
+  const available = (["absmove_2atr", "spike_2atr"] as SpikeTarget[]).filter(
+    (t) => (predictions?.[t] ?? []).length > 0,
+  );
+  const [target, setTarget] = useState<SpikeTarget>(available[0] ?? "spike_2atr");
+  const spike = predictions?.[target] ?? [];
 
   const sectorData = sectors
     .filter((s) => s.ret_21d !== null)
@@ -109,10 +129,19 @@ export function OverviewPage({ bundle, news = [] }: { bundle: Bundle; news?: New
         <header className="card-head">
           <div>
             <h2 className="card-title">Sudden-move candidates</h2>
-            <p className="card-sub">
-              Highest modelled probability of a next-day move larger than 2× ATR.
-            </p>
+            <p className="card-sub">{TARGET_COPY[target].blurb}</p>
           </div>
+          {available.length > 1 && (
+            <div className="card-actions">
+              <div className="segmented" role="group" aria-label="Prediction target">
+                {available.map((t) => (
+                  <button key={t} type="button" aria-pressed={target === t} onClick={() => setTarget(t)}>
+                    {TARGET_COPY[t].label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </header>
         {spike.length === 0 ? (
           <p className="empty">No active model for this target.</p>
@@ -150,8 +179,21 @@ export function OverviewPage({ bundle, news = [] }: { bundle: Bundle; news?: New
       <section className="card span-7">
         <header className="card-head">
           <div>
+            <h2 className="card-title">Live track record</h2>
+            <p className="card-sub">
+              Did the published sudden-move picks actually move? Measured on predictions
+              that existed before their outcomes did.
+            </p>
+          </div>
+        </header>
+        <TrackRecordPanel record={bundle.track_record?.[target] ?? bundle.track_record?.spike_2atr} />
+      </section>
+
+      <section className="card span-12">
+        <header className="card-head">
+          <div>
             <h2 className="card-title">Model scorecard</h2>
-            <p className="card-sub">What the models can and cannot do, measured out-of-sample.</p>
+            <p className="card-sub">What the models can and cannot do, measured out-of-sample by walk-forward validation.</p>
           </div>
         </header>
         <ModelPanel models={models} />

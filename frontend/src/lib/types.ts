@@ -141,6 +141,32 @@ export interface SymbolRow {
   sector: string;
 }
 
+export interface TrackRecordDay {
+  as_of: string;
+  n_scored: number;
+  top_k: number;
+  top_hits: number;
+  top_precision: number;
+  base_rate: number;
+  lift: number | null;
+}
+
+export interface TrackRecord {
+  target: string;
+  horizon_days?: number;
+  days: TrackRecordDay[];
+  summary: {
+    model: string;
+    days_scored: number;
+    top_picks: number;
+    top_hits: number;
+    top_precision: number;
+    base_rate: number;
+    lift: number | null;
+    backtest_lift: number | null;
+  } | null;
+}
+
 export interface Bundle {
   meta: { generated_at: string; as_of: string | null; freshness: Freshness };
   regime: Regime;
@@ -155,4 +181,5 @@ export interface Bundle {
   news: NewsItem[];
   metrics: MetricDef[];
   symbols?: SymbolRow[];
+  track_record?: Record<string, TrackRecord>;
 }

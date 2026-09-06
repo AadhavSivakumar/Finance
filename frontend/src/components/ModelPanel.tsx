@@ -12,7 +12,8 @@ export function ModelPanel({ models }: { models: ModelRow[] }) {
   if (!models.length) return <p className="empty">No models trained yet.</p>;
 
   const label: Record<string, string> = {
-    spike_2atr: "Sudden move (next day > 2× ATR)",
+    spike_2atr: "Sudden gain (next day > +2× ATR)",
+    absmove_2atr: "Sudden move, either way (|next day| > 2× ATR)",
     up_5d: "Direction (up over 5 days)",
   };
 

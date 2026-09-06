@@ -115,8 +115,11 @@ services:
       resources:
         limits:
           # Training holds the full feature matrix in memory, so the worker
-          # needs a far larger allowance than the api's 512M.
-          memory: 4G
+          # needs a far larger allowance than the api's 512M. Measured peak
+          # was ~5GB before float32 features and dropping the imputer copy;
+          # 6G leaves headroom rather than having the OOM killer take out a
+          # 15-minute fit at minute 14.
+          memory: 6G
     security_opt:
       - no-new-privileges:true
 

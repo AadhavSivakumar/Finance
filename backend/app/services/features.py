@@ -30,6 +30,28 @@ RETURN_WINDOWS = (1, 5, 10, 21, 63, 126, 252)
 MARKET_SYMBOL = "SPY"
 VIX_SYMBOL = "^VIX"
 
+# GICS sector name (as Wikipedia spells it) -> the SPDR sector ETF.
+SECTOR_ETF: dict[str, str] = {
+    "Information Technology": "XLK",
+    "Financials": "XLF",
+    "Health Care": "XLV",
+    "Consumer Discretionary": "XLY",
+    "Consumer Staples": "XLP",
+    "Energy": "XLE",
+    "Industrials": "XLI",
+    "Materials": "XLB",
+    "Utilities": "XLU",
+    "Real Estate": "XLRE",
+    "Communication Services": "XLC",
+}
+
+# "Days to next earnings" is capped here. Earnings dates are announced a few
+# weeks ahead, so beyond ~30 calendar days a historical row would be using a
+# date that was NOT yet public at the time -- mild lookahead. Capping treats
+# everything past the horizon as "not soon", which is all the model needs and
+# all a trader would have known.
+EARNINGS_HORIZON_DAYS = 30
+
 
 def _safe_div(a: pd.Series, b: pd.Series) -> pd.Series:
     return a / b.replace(0, np.nan)
@@ -155,8 +177,79 @@ def _market_context(bars: pd.DataFrame) -> pd.DataFrame:
     return ctx
 
 
-def build_features(bars: pd.DataFrame) -> pd.DataFrame:
+def _earnings_features(feats: pd.DataFrame, earnings: pd.DataFrame) -> pd.DataFrame:
+    """days_to_earnings (capped) and days_since_earnings, via merge_asof.
+
+    merge_asof(direction="forward") finds the next earnings date on or after
+    each row's date; "backward" finds the most recent one before it. Both are
+    O(n log n) rather than the O(n*m) a naive join would be.
+    """
+    if earnings is None or earnings.empty:
+        feats["days_to_earnings"] = np.nan
+        feats["days_since_earnings"] = np.nan
+        feats["earnings_within_5d"] = np.nan
+        return feats
+
+    e = earnings.rename(columns={"earnings_date": "date"}).sort_values("date")
+    e["_edate"] = e["date"]
+    base = feats[["symbol", "date"]].sort_values("date")
+
+    nxt = pd.merge_asof(base, e, on="date", by="symbol", direction="forward")
+    prv = pd.merge_asof(base, e, on="date", by="symbol", direction="backward")
+
+    to_next = (nxt["_edate"] - nxt["date"]).dt.days
+    since = (prv["date"] - prv["_edate"]).dt.days
+
+    to_next = to_next.clip(upper=EARNINGS_HORIZON_DAYS).fillna(EARNINGS_HORIZON_DAYS)
+    nxt_frame = pd.DataFrame(
+        {"symbol": nxt["symbol"], "date": nxt["date"],
+         "days_to_earnings": to_next.to_numpy(),
+         "earnings_within_5d": (to_next <= 5).astype(float).to_numpy()}
+    )
+    prv_frame = pd.DataFrame(
+        {"symbol": prv["symbol"], "date": prv["date"], "days_since_earnings": since.to_numpy()}
+    )
+    feats = feats.merge(nxt_frame, on=["symbol", "date"], how="left")
+    feats = feats.merge(prv_frame, on=["symbol", "date"], how="left")
+    return feats
+
+
+def _sector_relative(feats: pd.DataFrame, bars: pd.DataFrame, sector_map: dict[str, str]) -> pd.DataFrame:
+    """Return minus the symbol's own sector ETF return.
+
+    "Up 5% while the sector is up 6%" is a different fact from "up 5% while the
+    sector is flat", and the market-relative feature cannot see it.
+    """
+    if not sector_map:
+        return feats
+    etfs = sorted(set(sector_map.values()))
+    wide = bars[bars["symbol"].isin(etfs)].pivot_table(index="date", columns="symbol", values="close")
+    if wide.empty:
+        return feats
+
+    sector_rets = {}
+    for w in (5, 21):
+        r = wide.pct_change(w) * 100
+        sector_rets[w] = r.stack().rename(f"_sector_ret_{w}d").reset_index()
+        sector_rets[w].columns = ["date", "_etf", f"_sector_ret_{w}d"]
+
+    feats["_etf"] = feats["symbol"].map(sector_map)
+    for w in (5, 21):
+        feats = feats.merge(sector_rets[w], on=["date", "_etf"], how="left")
+        feats[f"rel_sector_{w}d"] = feats[f"ret_{w}d"] - feats[f"_sector_ret_{w}d"]
+        feats = feats.drop(columns=[f"_sector_ret_{w}d"])
+    return feats.drop(columns=["_etf"])
+
+
+def build_features(
+    bars: pd.DataFrame,
+    earnings: pd.DataFrame | None = None,
+    sector_map: dict[str, str] | None = None,
+) -> pd.DataFrame:
     """Long-format OHLCV -> feature matrix indexed by (symbol, date).
+
+    `earnings` is a (symbol, earnings_date) frame; `sector_map` maps a symbol
+    to its sector ETF. Both optional so the pure-bars path still works.
 
     Rows are NOT dropped here even when features are NaN during the warm-up
     period; dropping is the caller's decision, because the prediction path
@@ -214,6 +307,21 @@ def build_features(bars: pd.DataFrame) -> pd.DataFrame:
         feats["rel_strength_21d"] = feats["ret_21d"] - feats["mkt_ret_21d"]
     if "mkt_ret_5d" in feats:
         feats["rel_strength_5d"] = feats["ret_5d"] - feats["mkt_ret_5d"]
+
+    feats = _sector_relative(feats, bars, sector_map or {})
+    feats = _earnings_features(feats, earnings)
+
+    # float32 for model inputs: a million rows x ~60 features is ~500MB in
+    # float64 and ~250MB in float32, and every sklearn copy doubles that. No
+    # indicator here needs more than ~7 significant figures. Internals
+    # (underscore-prefixed) stay float64 because the labeller compares against
+    # them and a boundary case must not flip on a cast.
+    feature_cols = [
+        c for c in feats.columns
+        if c not in ("symbol", "date") and not c.startswith("_")
+        and pd.api.types.is_float_dtype(feats[c])
+    ]
+    feats[feature_cols] = feats[feature_cols].astype("float32")
 
     return feats.set_index(["symbol", "date"]).sort_index()
 

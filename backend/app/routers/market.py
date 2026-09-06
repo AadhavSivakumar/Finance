@@ -8,7 +8,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-from ..services import queries
+from ..services import modeling, queries
+
+# One regex built from the canonical target list. A hand-written alternation
+# here was missing absmove_2atr after that target was added, so the API
+# returned 422 for a model that was active and had predictions in the table.
+TARGET_PATTERN = "^(" + "|".join(sorted(modeling.TARGETS)) + ")$"
 
 router = APIRouter(prefix="/api", tags=["market"])
 
@@ -55,7 +60,7 @@ def models(db: Session = Depends(get_db)) -> list[dict]:
 
 @router.get("/predictions")
 def predictions(
-    target: str = Query("spike_2atr", pattern="^(spike_2atr|up_5d)$"),
+    target: str = Query("spike_2atr", pattern=TARGET_PATTERN),
     limit: int = Query(40, ge=1, le=200),
     db: Session = Depends(get_db),
 ) -> list[dict]:
@@ -96,3 +101,12 @@ def news(limit: int = Query(60, ge=1, le=300), db: Session = Depends(get_db)) ->
 def metrics() -> list[dict]:
     """Definitions for every metric shown in the UI."""
     return queries.metrics()
+
+
+@router.get("/track-record")
+def track_record(
+    target: str = Query("spike_2atr", pattern=TARGET_PATTERN),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Realised outcomes of past published predictions."""
+    return queries.track_record(db, target=target)

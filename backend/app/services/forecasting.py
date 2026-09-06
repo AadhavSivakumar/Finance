@@ -124,9 +124,11 @@ def build_models() -> dict[str, Pipeline]:
         ),
         "gradient_boosting": Pipeline(
             [
-                # HistGradientBoosting handles NaN natively, but imputing keeps
-                # both pipelines fed identically so the comparison is fair.
-                ("impute", SimpleImputer(strategy="median")),
+                # No imputer: HistGradientBoosting handles NaN natively and
+                # learns from missingness (an unknown earnings date IS
+                # information). The imputer also forced a full float64 copy of
+                # the matrix -- with a million rows that was the difference
+                # between fitting in memory and being OOM-killed.
                 (
                     "clf",
                     HistGradientBoostingClassifier(

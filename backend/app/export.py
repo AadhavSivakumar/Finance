@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .db import SessionLocal
-from .services import queries
+from .services import modeling, queries
 
 log = logging.getLogger(__name__)
 
@@ -42,14 +42,19 @@ def build_payload(db) -> dict[str, object]:
         "sectors": queries.sector_rotation(db),
         "signals": queries.signals(db, days=5, limit=500),
         "models": queries.model_runs(db),
+        # Derived from modeling.TARGETS so adding a target cannot silently leave
+        # it out of the published bundle -- which is exactly what happened when
+        # absmove_2atr was added and this dict still listed two hand-written keys.
         "predictions": {
-            "spike_2atr": queries.predictions(db, target="spike_2atr", limit=50),
-            "up_5d": queries.predictions(db, target="up_5d", limit=50),
+            t: queries.predictions(db, target=t, limit=50) for t in modeling.TARGETS
         },
         "correlations": queries.correlations(db),
         "news": queries.news(db, limit=80),
         "metrics": queries.metrics(),
         "symbols": queries.symbols(db),
+        "track_record": {
+            t: queries.track_record(db, target=t) for t in modeling.TARGETS
+        },
         "macro": queries.macro(db),
         "history": {s: queries.history(db, s, days=400) for s in HISTORY_SYMBOLS},
     }

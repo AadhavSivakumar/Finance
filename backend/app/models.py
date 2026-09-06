@@ -317,3 +317,26 @@ class NewsItem(Base):
     # Tickers mentioned, best-effort. JSON rather than a join table: this is a
     # display aid, not something we query by.
     symbols: Mapped[list[str]] = mapped_column(JSONType, default=list)
+
+
+class EarningsDate(Base):
+    """Scheduled and historical earnings announcement dates.
+
+    Spikes cluster around earnings, so "days until the next report" is the
+    single most obvious feature for a sudden-move model. Cached here because
+    fetching 529 symbols from Yahoo takes ~6 minutes -- fine once a day in the
+    training cycle, absurd on every 15-minute refresh.
+    """
+
+    __tablename__ = "earnings_dates"
+    __table_args__ = (
+        UniqueConstraint("symbol", "earnings_date", name="uq_earnings_symbol_date"),
+        Index("ix_earnings_symbol_date", "symbol", "earnings_date"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(24), nullable=False)
+    earnings_date: Mapped[date] = mapped_column(Date, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

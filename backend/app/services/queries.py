@@ -447,3 +447,126 @@ def symbols(db: Session) -> list[dict]:
         }
         for i in db.scalars(select(Instrument).order_by(Instrument.symbol))
     ]
+
+
+# --------------------------------------------------------------------------
+# Track record -- realised outcomes of past predictions
+# --------------------------------------------------------------------------
+
+
+def track_record(db: Session, target: str = "spike_2atr", top_fraction: float = 0.10) -> dict:
+    """How the model's past picks actually turned out.
+
+    For each prediction date whose outcome is now known, take the top decile
+    by probability and measure what fraction really spiked, against the base
+    rate of ALL symbols that day. This is the number a walk-forward backtest
+    can only estimate; here it is measured live, on predictions that were
+    published before the outcome existed.
+
+    Only the active model with the best AUC is scored, matching what the
+    dashboard displayed on those days.
+    """
+    from ..models import PriceBar
+
+    runs = [m for m in model_runs(db) if m["is_active"] and m["target"] == target]
+    if not runs:
+        return {"target": target, "days": [], "summary": None}
+    best = max(runs, key=lambda m: m["roc_auc"] or 0)
+    horizon = int(best.get("horizon_days") or 1)
+
+    preds = db.execute(
+        select(Prediction.as_of, Prediction.symbol, Prediction.probability)
+        .where(Prediction.target == target, Prediction.model == best["model"])
+        .order_by(Prediction.as_of)
+    ).all()
+    if not preds:
+        return {"target": target, "days": [], "summary": None}
+
+    import pandas as pd
+
+    pf = pd.DataFrame(preds, columns=["as_of", "symbol", "probability"])
+    pf["as_of"] = pd.to_datetime(pf["as_of"])
+
+    # Bars covering the prediction window, for the outcome and the ATR scale.
+    first = pf["as_of"].min().date() - timedelta(days=40)
+    bars = db.execute(
+        select(PriceBar.symbol, PriceBar.bar_date, PriceBar.high, PriceBar.low, PriceBar.close)
+        .where(PriceBar.bar_date >= first, PriceBar.symbol.in_(pf["symbol"].unique().tolist()))
+        .order_by(PriceBar.symbol, PriceBar.bar_date)
+    ).all()
+    if not bars:
+        return {"target": target, "days": [], "summary": None}
+    bf = pd.DataFrame(bars, columns=["symbol", "date", "high", "low", "close"])
+    bf["date"] = pd.to_datetime(bf["date"])
+    for c in ("high", "low", "close"):
+        bf[c] = bf[c].astype(float)
+
+    from . import indicators as I
+    from .labels import SPIKE_ATR_MULTIPLE
+
+    # Realised label per (symbol, as_of): same definition the model was trained
+    # on -- forward return beyond SPIKE_ATR_MULTIPLE x ATR(as_of).
+    outcomes = []
+    for sym, g in bf.groupby("symbol", sort=False):
+        g = g.set_index("date").sort_index()
+        atr_pct = I.atr(g["high"], g["low"], g["close"], 14) / g["close"] * 100
+        fwd = (g["close"].shift(-horizon) / g["close"] - 1) * 100
+        thr = SPIKE_ATR_MULTIPLE * atr_pct
+        if target == "absmove_2atr":
+            hit = fwd.abs() > thr
+        elif target == "up_5d":
+            hit = fwd > 0
+        else:
+            hit = fwd > thr
+        hit = hit.where(fwd.notna() & thr.notna())
+        outcomes.append(pd.DataFrame({"symbol": sym, "as_of": g.index, "hit": hit.to_numpy()}))
+    of = pd.concat(outcomes, ignore_index=True)
+
+    merged = pf.merge(of, on=["symbol", "as_of"], how="left").dropna(subset=["hit"])
+    if merged.empty:
+        return {"target": target, "days": [], "summary": None}
+
+    # A day is only scoreable once most of the universe has an outcome.
+    # Crypto trades weekends, so a Saturday has three resolved symbols and an
+    # unresolved equity day has the same three -- neither is a market day, and
+    # "0 of 1 pick hit" from those would be noise dressed as evidence.
+    MIN_RESOLVED = 100
+    resolved_counts = merged.groupby("as_of").size()
+    merged = merged[merged["as_of"].isin(resolved_counts[resolved_counts >= MIN_RESOLVED].index)]
+    if merged.empty:
+        return {"target": target, "horizon_days": horizon, "days": [], "summary": None}
+
+    days = []
+    for as_of, g in merged.groupby("as_of"):
+        n = len(g)
+        k = max(1, int(round(n * top_fraction)))
+        top = g.nlargest(k, "probability")
+        base = float(g["hit"].mean())
+        prec = float(top["hit"].mean())
+        days.append(
+            {
+                "as_of": as_of.date().isoformat(),
+                "n_scored": int(n),
+                "top_k": int(k),
+                "top_hits": int(top["hit"].sum()),
+                "top_precision": round(prec * 100, 2),
+                "base_rate": round(base * 100, 2),
+                "lift": round(prec / base, 2) if base > 0 else None,
+            }
+        )
+
+    total_top = sum(d["top_k"] for d in days)
+    total_hits = sum(d["top_hits"] for d in days)
+    pooled_prec = total_hits / total_top if total_top else 0.0
+    pooled_base = float(merged["hit"].mean())
+    summary = {
+        "model": best["model"],
+        "days_scored": len(days),
+        "top_picks": total_top,
+        "top_hits": total_hits,
+        "top_precision": round(pooled_prec * 100, 2),
+        "base_rate": round(pooled_base * 100, 2),
+        "lift": round(pooled_prec / pooled_base, 2) if pooled_base > 0 else None,
+        "backtest_lift": best.get("lift"),
+    }
+    return {"target": target, "horizon_days": horizon, "days": days, "summary": summary}

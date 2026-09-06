@@ -56,6 +56,14 @@ def _label_one_symbol(g: pd.DataFrame) -> pd.DataFrame:
     # quietly train the model on fabricated negatives.
     out["label_spike_2atr"] = spike.where(out["fwd_ret_1d"].notna() & threshold.notna())
 
+    # Direction-agnostic: a large move EITHER way. This is the honest framing
+    # of what volatility models can actually do -- volatility clusters and is
+    # forecastable, direction is close to a martingale. Expect this target to
+    # score higher than the upside-only one, and expect it to be the one you
+    # actually want if the question is "will something happen tomorrow".
+    absmove = out["fwd_ret_1d"].abs() > threshold
+    out["label_absmove_2atr"] = absmove.where(out["fwd_ret_1d"].notna() & threshold.notna())
+
     up = out["fwd_ret_5d"] > 0
     out["label_up_5d"] = up.where(out["fwd_ret_5d"].notna())
 
@@ -83,7 +91,7 @@ def add_labels(features: pd.DataFrame, bars: pd.DataFrame) -> pd.DataFrame:
 
 
 def label_columns() -> list[str]:
-    return ["label_spike_2atr", "label_up_5d"]
+    return ["label_spike_2atr", "label_absmove_2atr", "label_up_5d"]
 
 
 def base_rates(frame: pd.DataFrame) -> dict[str, float]:

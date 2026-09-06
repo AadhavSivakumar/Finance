@@ -79,23 +79,31 @@ export async function loadBundle(): Promise<Bundle> {
     return getJSON<Bundle>(`${DATA_BASE}/all.json`);
   }
 
-  const [regime, movers, sectors, signals, models, spike, up5, correlations, macro, freshness] =
+  const [regime, movers, sectors, signals, models, correlations, macro, freshness] =
     await Promise.all([
       getJSON<Bundle["regime"]>("/api/regime"),
       getJSON<Bundle["movers"]>("/api/movers"),
       getJSON<Bundle["sectors"]>("/api/sectors"),
       getJSON<Bundle["signals"]>("/api/signals?days=5&limit=500"),
       getJSON<Bundle["models"]>("/api/models"),
-      getJSON<Bundle["predictions"][string]>("/api/predictions?target=spike_2atr&limit=50"),
-      getJSON<Bundle["predictions"][string]>("/api/predictions?target=up_5d&limit=50"),
       getJSON<Bundle["correlations"]>("/api/correlations"),
       getJSON<Bundle["macro"]>("/api/macro"),
       getJSON<Bundle["meta"]["freshness"]>("/api/freshness"),
     ]);
 
-  const [news, metrics] = await Promise.all([
+  // Every prediction target the API knows about. Kept as one list so the
+  // API-mode fetch cannot drift from what the static bundle publishes.
+  const TARGETS = ["spike_2atr", "absmove_2atr", "up_5d"] as const;
+  const tr = (t: string) =>
+    getJSON<NonNullable<Bundle["track_record"]>[string]>(`/api/track-record?target=${t}`).catch(() => undefined);
+  const pr = (t: string) =>
+    getJSON<Bundle["predictions"][string]>(`/api/predictions?target=${t}&limit=50`).catch(() => []);
+
+  const [news, metrics, trackRecords, predictionSets] = await Promise.all([
     getJSON<Bundle["news"]>("/api/news?limit=80").catch(() => []),
     getJSON<Bundle["metrics"]>("/api/metrics").catch(() => []),
+    Promise.all(TARGETS.map(tr)),
+    Promise.all(TARGETS.map(pr)),
   ]);
 
   return {
@@ -105,11 +113,14 @@ export async function loadBundle(): Promise<Bundle> {
     sectors,
     signals,
     models,
-    predictions: { spike_2atr: spike, up_5d: up5 },
+    predictions: Object.fromEntries(TARGETS.map((t, i) => [t, predictionSets[i]])),
     correlations,
     macro,
     news,
     metrics,
+    track_record: Object.fromEntries(
+      TARGETS.map((t, i) => [t, trackRecords[i]]).filter(([, v]) => v !== undefined),
+    ),
     // Histories are fetched lazily in API mode; the static bundle ships them.
     history: {},
   };

@@ -102,20 +102,12 @@ jobs:
 
       - name: Ingest, compute and train
         working-directory: backend
+        # Training first: it syncs the universe, ingests history and fits the
+        # models. Refresh then computes today's snapshots and predictions with
+        # those models.
         run: |
-          python - <<'PY'
-          import logging
-          logging.basicConfig(level="INFO", format="%(levelname)s %(message)s")
-          from app.db import SessionLocal
-          from app import worker
-
-          db = SessionLocal()
-          # Training first: it syncs the universe, ingests history and fits the
-          # models. Refresh then computes today's snapshots and predictions
-          # using those models.
-          print(worker.training_cycle(db))
-          print(worker.refresh_cycle(db))
-          PY
+          python -m app.worker --once training
+          python -m app.worker --once refresh
 
       - name: Fetch headlines
         # So the published bundle carries a news fallback. At runtime the site

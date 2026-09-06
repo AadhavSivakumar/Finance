@@ -22,7 +22,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -37,10 +37,15 @@ settings = get_settings()
 
 TARGETS = {
     # target -> label horizon in trading days
-    "spike_2atr": 1,
-    "up_5d": 5,
+    "spike_2atr": 1,      # next-day GAIN > 2x ATR
+    "absmove_2atr": 1,    # next-day move > 2x ATR in EITHER direction
+    "up_5d": 5,           # 5-day return positive
 }
-LABEL_COL = {"spike_2atr": "label_spike_2atr", "up_5d": "label_up_5d"}
+LABEL_COL = {
+    "spike_2atr": "label_spike_2atr",
+    "absmove_2atr": "label_absmove_2atr",
+    "up_5d": "label_up_5d",
+}
 
 # Gate thresholds. Modest on purpose: real edge in this domain is small, and
 # demanding a lot would reject everything, while demanding nothing would
@@ -78,6 +83,25 @@ def model_path(target: str, model_name: str) -> Path:
 
 def needs_initial_training(db: Session) -> bool:
     return db.scalar(select(ModelRun.id).limit(1)) is None
+
+
+def latest_training_time(db: Session):
+    """When the most recent model was trained, or None if never."""
+    return db.scalar(select(func.max(ModelRun.trained_at)))
+
+
+def training_is_due(last_trained, now, interval_seconds: int) -> bool:
+    """Pure decision so it is testable without a database.
+
+    Derived from the stored models rather than from process uptime. The
+    previous version compared `time.monotonic()` (seconds since HOST boot)
+    against an initial `last_training = 0.0`, so on any host up for more than a
+    day the worker retrained on every container restart -- ~15 minutes of
+    multi-core compute each time, racing anything else that touched the models.
+    """
+    if last_trained is None:
+        return True
+    return (now - last_trained).total_seconds() >= interval_seconds
 
 
 # --------------------------------------------------------------------------

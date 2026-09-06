@@ -65,3 +65,56 @@ def test_training_cycle_ingests_before_building_features():
     ingest_at = src.index("ingest_bars")
     build_at = src.index("build_frame")
     assert ingest_at < build_at, "training_cycle must ingest before building features"
+
+
+class TestTrainingIsDue:
+    """Regression guard: the worker used to retrain on every restart."""
+
+    from datetime import datetime, timedelta, timezone
+
+    NOW = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
+
+    def test_never_trained_is_due(self):
+        from app.services.modeling import training_is_due
+        assert training_is_due(None, self.NOW, 86400)
+
+    def test_fresh_models_are_not_due_after_a_restart(self):
+        from app.services.modeling import training_is_due
+        two_hours_ago = self.NOW - self.timedelta(hours=2)
+        assert not training_is_due(two_hours_ago, self.NOW, 86400)
+
+    def test_stale_models_are_due(self):
+        from app.services.modeling import training_is_due
+        two_days_ago = self.NOW - self.timedelta(days=2)
+        assert training_is_due(two_days_ago, self.NOW, 86400)
+
+    def test_boundary_is_inclusive(self):
+        from app.services.modeling import training_is_due
+        exactly = self.NOW - self.timedelta(seconds=86400)
+        assert training_is_due(exactly, self.NOW, 86400)
+
+
+class TestTargetsAreWiredEverywhere:
+    """Adding a target once broke three places that each listed targets by hand:
+    the /predictions route pattern (422), the export payload (missing key) and
+    the frontend fetch. These pin the single-source-of-truth wiring."""
+
+    def test_route_pattern_accepts_every_target(self):
+        import re
+        from app.routers.market import TARGET_PATTERN
+        from app.services.modeling import TARGETS
+        for t in TARGETS:
+            assert re.match(TARGET_PATTERN, t), f"{t} rejected by route pattern"
+
+    def test_route_pattern_rejects_garbage(self):
+        import re
+        from app.routers.market import TARGET_PATTERN
+        assert not re.match(TARGET_PATTERN, "spike_2atr; DROP TABLE")
+        assert not re.match(TARGET_PATTERN, "")
+
+    def test_export_iterates_the_canonical_target_list(self):
+        import inspect
+        from app import export
+        src = inspect.getsource(export.build_payload)
+        assert "modeling.TARGETS" in src
+        assert '"spike_2atr": queries.predictions' not in src  # no hand-written keys

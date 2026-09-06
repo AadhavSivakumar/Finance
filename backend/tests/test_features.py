@@ -67,7 +67,11 @@ def test_features_do_not_change_when_future_bars_arrive():
 
 
 def test_no_feature_column_is_constant_or_all_nan():
-    feats = F.build_features(BARS)
+    # Earnings features are legitimately all-NaN when no earnings table is
+    # supplied, so give the builder one; this test is about the computation,
+    # not about the optional input being absent.
+    edates = pd.DataFrame({"symbol": "AAA", "earnings_date": pd.to_datetime(["2023-06-15", "2024-02-01"])})
+    feats = F.build_features(BARS, earnings=edates)
     cols = F.feature_columns(feats)
     assert len(cols) > 25
     tail = feats.groupby(level="symbol").tail(50)
@@ -123,8 +127,8 @@ def test_spike_label_is_rare_but_present():
     assert 0.001 < rate < 0.20, rate
 
 
-def test_base_rates_reported_for_both_labels():
+def test_base_rates_reported_for_every_label():
     feats = L.add_labels(F.build_features(BARS), BARS)
     rates = L.base_rates(feats)
-    assert set(rates) == {"label_spike_2atr", "label_up_5d"}
+    assert set(rates) == set(L.label_columns())
     assert all(0 < v < 100 for v in rates.values())

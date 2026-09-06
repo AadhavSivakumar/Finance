@@ -23,6 +23,9 @@ fewer, and the control flow is visible.
 
 from __future__ import annotations
 
+import argparse
+import ctypes
+import gc
 import logging
 import os
 import signal
@@ -35,7 +38,7 @@ import pandas as pd
 from .config import get_settings
 from .db import SessionLocal
 from .models import ComputeRun, RunStatus
-from .services import analytics, ingest, macro, modeling, news
+from .services import analytics, earnings, ingest, macro, modeling, news
 from .services import features as F
 from .universe import BENCHMARK
 from .services import labels as L
@@ -89,7 +92,23 @@ class run_tracker:
             self.row.error = "".join(traceback.format_exception(exc_type, exc, tb))[-4000:]
             log.exception("%s cycle failed", self.kind)
         self.db.commit()
+        release_memory()
         return True  # a failed cycle must not kill the worker
+
+
+def release_memory() -> None:
+    """Return freed heap to the OS after a heavy cycle.
+
+    CPython frees the DataFrames, but glibc keeps the arenas, so the container
+    sits at its peak RSS between cycles -- 5GB for a loop that is idle 95% of
+    the time, and above the production memory limit. malloc_trim hands the
+    pages back. Best-effort: not every libc exposes it.
+    """
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
 
 
 def build_frame(db) -> tuple[pd.DataFrame, pd.DataFrame, date | None]:
@@ -97,7 +116,18 @@ def build_frame(db) -> tuple[pd.DataFrame, pd.DataFrame, date | None]:
     bars = ingest.load_bars(db)
     if bars.empty:
         return bars, pd.DataFrame(), None
-    feats = L.add_labels(F.build_features(bars), bars)
+
+    # Symbol -> sector ETF, for sector-relative returns.
+    from sqlalchemy import select
+    from .models import Instrument
+    sector_map = {
+        i.symbol: F.SECTOR_ETF[i.sector]
+        for i in db.scalars(select(Instrument))
+        if i.sector in F.SECTOR_ETF
+    }
+    feats = L.add_labels(
+        F.build_features(bars, earnings=earnings.load(db), sector_map=sector_map), bars
+    )
 
     # as_of is the last date the BENCHMARK traded, not the last date any
     # instrument did. Crypto trades weekends, so the global max is routinely a
@@ -153,6 +183,13 @@ def training_cycle(db) -> dict:
         # already been ingested by an earlier refresh.
         stats = ingest.ingest_bars(db, history_years=HISTORY_YEARS)
 
+        # ~6 minutes for 529 symbols, which is why it lives here and not in the
+        # 15-minute refresh.
+        from sqlalchemy import select
+        from .models import Instrument
+        groups = [(i.symbol, i.asset_group.value) for i in db.scalars(select(Instrument))]
+        stats["earnings"] = earnings.refresh(db, groups)
+
         _, feats, as_of = build_frame(db)
         if as_of is None:
             run.detail = {"error": "no bars"}
@@ -168,7 +205,37 @@ def training_cycle(db) -> dict:
         return detail
 
 
+def run_once(kind: str) -> int:
+    """Run a single cycle and exit. For CI and for manual retrains.
+
+    Exists so nobody runs a second training process INSIDE the live worker
+    container alongside its loop -- two feature matrices in one container is
+    how the OOM killer got involved. Stop the worker, run this, start it.
+    """
+    logging.basicConfig(
+        level=settings.log_level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    db = SessionLocal()
+    cycles = {"news": news_cycle, "refresh": refresh_cycle, "training": training_cycle}
+    try:
+        result = cycles[kind](db)
+        log.info("%s finished: %s", kind, result)
+        return 0 if "error" not in (result or {}) else 1
+    finally:
+        db.close()
+
+
 def main() -> None:
+    ap = argparse.ArgumentParser(description="Market analytics worker")
+    ap.add_argument(
+        "--once", choices=["news", "refresh", "training"],
+        help="run one cycle and exit instead of looping",
+    )
+    args = ap.parse_args()
+    if args.once:
+        raise SystemExit(run_once(args.once))
+
     logging.basicConfig(
         level=settings.log_level,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -182,15 +249,17 @@ def main() -> None:
     )
 
     db = SessionLocal()
-    last_training = 0.0
     news_cycle(db)  # populate immediately; do not show an empty feed for 5 min
 
-    # Train on boot if no model has ever been stored, so a fresh stack becomes
-    # useful without waiting a full day.
-    if modeling.needs_initial_training(db):
-        log.info("no trained models found — running initial training")
+    # Decide from the DATABASE whether training is due, not from process
+    # uptime. A fresh stack (no models) trains immediately; a restart with
+    # models under a day old does not retrain; a restart after a long outage
+    # does. See modeling.training_is_due for the bug this replaces.
+    last_trained = modeling.latest_training_time(db)
+    if modeling.training_is_due(last_trained, datetime.now(timezone.utc), TRAINING_SECONDS):
+        log.info("training due (last trained: %s) — running now", last_trained or "never")
         training_cycle(db)
-        last_training = time.monotonic()
+    last_training = time.monotonic()
 
     last_refresh = 0.0
     last_news = 0.0
