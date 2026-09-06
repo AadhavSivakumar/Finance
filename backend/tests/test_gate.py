@@ -145,3 +145,22 @@ def test_prediction_history_round_trips_through_json(tmp_path):
     sql = str(written[0].compile(dialect=__import__("sqlalchemy.dialects.postgresql", fromlist=["dialect"]).dialect()))
     assert "ON CONFLICT" in sql and "DO NOTHING" in sql
     assert date.fromisoformat(payload["as_of"]) == date(2026, 9, 4)
+
+
+def test_prediction_history_never_overwrites_a_published_day(tmp_path):
+    """A retrain or a fallback build must not replace the picks that were
+    actually shown; the track record scores those and only those."""
+    from datetime import date
+    from app import prediction_history as ph
+
+    original = tmp_path / "2026-09-04.json"
+    original.write_text('{"as_of":"2026-09-04","rows":[{"s":"OLD","t":"x","m":"y","p":0.1,"q":1.0}]}')
+
+    class FakeDB:
+        def execute(self, stmt):
+            class R:  # one row from a "new" model
+                def __iter__(self): return iter([("NEW", "x", "y", 0.9, 99.0)])
+                def all(self): return [("NEW", "x", "y", 0.9, 99.0)]
+            return R()
+    assert ph.export_day(FakeDB(), date(2026, 9, 4), tmp_path) == 0
+    assert '"OLD"' in original.read_text() and '"NEW"' not in original.read_text()

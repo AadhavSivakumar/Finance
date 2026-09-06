@@ -41,6 +41,15 @@ def export_day(db, as_of: date, out_dir: Path) -> int:
     if not rows:
         return 0
     out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{as_of.isoformat()}.json"
+    if path.exists():
+        # FIRST publication wins. The track record scores what was actually
+        # shown on the site that day; a later build (a retrain, or the 06:00
+        # fallback run) must not swap in a different model's picks before the
+        # outcome is known. Enforced here, not just claimed in a docstring --
+        # the first CI run after the bootstrap did exactly that overwrite.
+        log.info("%s already published, keeping the original", path.name)
+        return 0
     payload = {
         "as_of": as_of.isoformat(),
         "rows": [
@@ -49,9 +58,7 @@ def export_day(db, as_of: date, out_dir: Path) -> int:
             for s, t, m, p, q in rows
         ],
     }
-    (out_dir / f"{as_of.isoformat()}.json").write_text(
-        json.dumps(payload, separators=(",", ":"))
-    )
+    path.write_text(json.dumps(payload, separators=(",", ":")))
     return len(rows)
 
 

@@ -64,7 +64,9 @@ export function TrackRecordPanel({ record }: { record?: TR }) {
 
       <p className="card-sub" style={{ marginTop: 10 }}>
         Pooled: {s.top_hits} of {s.top_picks} top-decile picks spiked ({s.top_precision}%) against a{" "}
-        {s.base_rate}% base rate.
+        {s.base_rate}% base rate. The backtest figure is for the <em>current</em> model; picks from
+        before its last retrain were made by an earlier generation, so the two are not a like-for-like
+        pair until the record rolls forward.
         {fewEvents && (
           <>
             {" "}
