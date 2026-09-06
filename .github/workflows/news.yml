@@ -73,4 +73,10 @@ jobs:
             exit 0
           fi
           git commit -m "headlines $(date -u +%Y-%m-%dT%H:%MZ)"
-          git push origin HEAD:data
+          # The dashboard build publishes symbols and prediction history to
+          # this same branch, so a plain push can lose the race. Rebase onto
+          # whatever landed and retry rather than failing the run.
+          for attempt in 1 2 3; do
+            git push origin HEAD:data && break
+            git fetch origin data && git rebase origin/data || exit 1
+          done

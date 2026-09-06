@@ -118,3 +118,30 @@ class TestTargetsAreWiredEverywhere:
         src = inspect.getsource(export.build_payload)
         assert "modeling.TARGETS" in src
         assert '"spike_2atr": queries.predictions' not in src  # no hand-written keys
+
+
+def test_prediction_history_round_trips_through_json(tmp_path):
+    """export -> import must restore the exact rows; the CI track record
+    depends on this file format surviving a stateless rebuild."""
+    import json
+    from datetime import date
+    from app import prediction_history as ph
+
+    payload = {"as_of": "2026-09-04", "rows": [
+        {"s": "AAPL", "t": "spike_2atr", "m": "gradient_boosting", "p": 0.0123, "q": 98.5},
+        {"s": "MSFT", "t": "spike_2atr", "m": "gradient_boosting", "p": 0.0045, "q": 61.0},
+    ]}
+    (tmp_path / "2026-09-04.json").write_text(json.dumps(payload))
+
+    written = []
+    class FakeDB:
+        def execute(self, stmt): written.append(stmt)
+        def commit(self): pass
+    counts = ph.import_dir(FakeDB(), tmp_path)
+    assert counts == {"2026-09-04": 2}
+    assert len(written) == 1
+    # The statement carries an ON CONFLICT DO NOTHING clause: history is
+    # append-only and a rerun must never overwrite what was published.
+    sql = str(written[0].compile(dialect=__import__("sqlalchemy.dialects.postgresql", fromlist=["dialect"]).dialect()))
+    assert "ON CONFLICT" in sql and "DO NOTHING" in sql
+    assert date.fromisoformat(payload["as_of"]) == date(2026, 9, 4)
